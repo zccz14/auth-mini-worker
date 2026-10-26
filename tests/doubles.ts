@@ -4,6 +4,8 @@ import type {
   Ed25519Store,
   EmailOtpRecord,
   EmailOtpStore,
+  RemoteLoginRow,
+  RemoteLoginStore,
   SessionRecord,
   SessionRow,
   SessionStore,
@@ -191,5 +193,74 @@ export class MemoryEd25519Store implements Ed25519Store {
   async touchLastUsed(credentialId: string, now: string): Promise<void> {
     const row = this.credentials.find((candidate) => candidate.id === credentialId);
     if (row) row.lastUsedAt = now;
+  }
+}
+
+export class MemoryRemoteLoginStore implements RemoteLoginStore {
+  rows: Array<RemoteLoginRow & { exchangeCodeHash: string; confirmationCodeHash: string }> = [];
+
+  async create(row: {
+    requestId: string;
+    exchangeCodeHash: string;
+    confirmationCodeHash: string;
+    redirectUri: string | null;
+    audiences: readonly string[];
+    expiresAt: string;
+    now: string;
+  }): Promise<void> {
+    this.rows.push({
+      requestId: row.requestId,
+      redirectUri: row.redirectUri,
+      audiences: [...row.audiences],
+      expiresAt: row.expiresAt,
+      createdAt: row.now,
+      status: 'pending',
+      approvedUserId: null,
+      exchangeCodeHash: row.exchangeCodeHash,
+      confirmationCodeHash: row.confirmationCodeHash,
+    });
+  }
+
+  async findIdByConfirmationCode(confirmationCodeHash: string, now: string): Promise<string | null> {
+    return this.rows.find((row) => row.confirmationCodeHash === confirmationCodeHash && row.status === 'pending' && row.approvedUserId === null && row.expiresAt > now)?.requestId ?? null;
+  }
+
+  async claim(requestId: string, userId: string, confirmationCodeHash: string, now: string): Promise<boolean> {
+    const row = this.rows.find((candidate) => candidate.requestId === requestId);
+    if (!row || row.confirmationCodeHash !== confirmationCodeHash || row.status !== 'pending' || row.approvedUserId !== null || row.expiresAt <= now) return false;
+    row.approvedUserId = userId;
+    return true;
+  }
+
+  async expireStale(now: string): Promise<void> {
+    for (const row of this.rows) if (row.status === 'pending' && row.expiresAt <= now) row.status = 'expired';
+  }
+
+  async listPending(userId: string, now: string): Promise<RemoteLoginRow[]> {
+    return this.rows.filter((row) => row.approvedUserId === userId && row.status === 'pending' && row.expiresAt > now);
+  }
+
+  async summary(requestId: string, userId: string): Promise<RemoteLoginRow | null> {
+    return this.rows.find((row) => row.requestId === requestId && row.approvedUserId === userId && row.status === 'pending') ?? null;
+  }
+
+  async decide(requestId: string, userId: string, status: 'approved' | 'denied', now: string): Promise<boolean> {
+    const row = this.rows.find((candidate) => candidate.requestId === requestId);
+    if (!row || row.approvedUserId !== userId || row.status !== 'pending' || row.expiresAt <= now) return false;
+    row.status = status;
+    return true;
+  }
+
+  async findApproved(requestId: string, exchangeCodeHash: string, now: string): Promise<{ userId: string; audiences: string[] } | null> {
+    const row = this.rows.find((candidate) => candidate.requestId === requestId && candidate.exchangeCodeHash === exchangeCodeHash && candidate.status === 'approved' && candidate.expiresAt > now);
+    if (!row?.approvedUserId) return null;
+    return { userId: row.approvedUserId, audiences: row.audiences };
+  }
+
+  async consume(requestId: string, exchangeCodeHash: string, now: string): Promise<boolean> {
+    const row = this.rows.find((candidate) => candidate.requestId === requestId);
+    if (!row || row.exchangeCodeHash !== exchangeCodeHash || row.status !== 'approved' || row.expiresAt <= now) return false;
+    row.status = 'consumed';
+    return true;
   }
 }

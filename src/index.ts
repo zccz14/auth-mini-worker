@@ -16,7 +16,18 @@ import { sendSmtpMail, workerSocketFactory } from './mail/smtp';
 import type { EmailDeps } from './routes/email';
 import { handleEmailStart, handleEmailVerify } from './routes/email';
 import { D1Ed25519Store } from './d1-ed25519';
+import { D1RemoteLoginStore } from './d1-remote-login';
 import type { AdminDeps } from './routes/admin';
+import type { RemoteLoginDeps } from './routes/remote-login';
+import {
+  handleRemoteLoginApprove,
+  handleRemoteLoginClaim,
+  handleRemoteLoginDeny,
+  handleRemoteLoginExchange,
+  handleRemoteLoginPending,
+  handleRemoteLoginStart,
+  handleSessionAuthorize,
+} from './routes/remote-login';
 import type { Ed25519Deps } from './routes/ed25519';
 import {
   handleEd25519CredentialCreate,
@@ -80,6 +91,15 @@ async function ed25519Deps(request: Request, env: Env): Promise<Ed25519Deps> {
   };
 }
 
+async function remoteLoginDeps(request: Request, env: Env): Promise<RemoteLoginDeps> {
+  return {
+    ...(await sessionDeps(request, env)),
+    remoteLoginStore: new D1RemoteLoginStore(env.DB),
+    clientIp: request.headers.get('cf-connecting-ip'),
+    userAgent: request.headers.get('user-agent'),
+  };
+}
+
 async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
   return {
     ...(await sessionDeps(request, env)),
@@ -124,6 +144,19 @@ const routes: Route[] = [
   route('POST', '/ed25519/verify', async (request, env) => handleEd25519Verify(request, await ed25519Deps(request, env))),
   route('GET', '/ed25519/credentials', async (request, env) => handleEd25519CredentialsList(request, await ed25519Deps(request, env))),
   route('POST', '/ed25519/credentials', async (request, env) => handleEd25519CredentialCreate(request, await ed25519Deps(request, env))),
+  route('POST', '/session/authorize', async (request, env) => handleSessionAuthorize(request, await sessionDeps(request, env))),
+  route('POST', '/remote-login/start', async (request, env) => handleRemoteLoginStart(request, await remoteLoginDeps(request, env))),
+  route('GET', '/remote-login/pending', async (request, env) => handleRemoteLoginPending(request, await remoteLoginDeps(request, env))),
+  route('POST', '/remote-login/claim', async (request, env) => handleRemoteLoginClaim(request, await remoteLoginDeps(request, env))),
+  route('POST', '/remote-login/:id/approve', async (request, env, params) =>
+    handleRemoteLoginApprove(request, await remoteLoginDeps(request, env), params['id'] ?? ''),
+  ),
+  route('POST', '/remote-login/:id/deny', async (request, env, params) =>
+    handleRemoteLoginDeny(request, await remoteLoginDeps(request, env), params['id'] ?? ''),
+  ),
+  route('POST', '/remote-login/:id/exchange', async (request, env, params) =>
+    handleRemoteLoginExchange(request, await remoteLoginDeps(request, env), params['id'] ?? ''),
+  ),
   route('PATCH', '/ed25519/credentials/:id', async (request, env, params) =>
     handleEd25519CredentialUpdate(request, await ed25519Deps(request, env), params['id'] ?? ''),
   ),

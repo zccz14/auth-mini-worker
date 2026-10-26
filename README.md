@@ -44,8 +44,11 @@ Phase 2 — storage and mail transport. Implemented:
 - **Key rotation**: `GET /admin/jwks`, `POST /admin/jwks/rotate` (STANDBY promoted to CURRENT in
   one D1 batch).
 
-Not implemented yet: `/session/authorize`, `/session/{id}/logout` (peer logout, needs
-passkey-management auth), the remaining `/admin/*`, `/remote-login/*`, `/webauthn/*`,
+- **Remote approval login**: `/remote-login/start|pending|claim|{id}/approve|{id}/deny|{id}/exchange`
+  and `/session/authorize` for SSO delegation.
+
+Not implemented yet: `/session/{id}/logout` (peer logout, needs passkey-management auth), the
+remaining `/admin/*`, `/webauthn/*`,
 the login GUI, and the data migration. Nothing is deployed and no route is publicly reachable.
 
 **Do not expose this publicly yet**: `/email/start` has no rate limiting, so a public URL would be
@@ -70,8 +73,8 @@ pnpm db:migrate:local         # apply migrations/ to the local D1
    `https://auth.ntnl.io` instead of the `localhost` seed.
 5. ~~**Ed25519 device auth** (`/ed25519/*`).~~ Done, including a live signature round trip.
 6. ~~**Key rotation**~~ Done.
-7. **Remote approval login** (`/remote-login/*`, `/session/authorize`) — the preferred sign-in flow.
-8. **Rate limiting** for `/email/*` before anything is publicly reachable.
+7. ~~**Remote approval login** (`/remote-login/*`, `/session/authorize`).~~ Done.
+8. **Rate limiting** for `/email/*` and `/remote-login/start` before anything is publicly reachable.
 3. **Ed25519 device auth**: `/ed25519/*` — challenge bytes must match the legacy server exactly.
 4. **Admin**: `/admin/setup`, `/admin/config`, `/admin/users`, `/admin/jwks(+rotate)`, `/admin/user-directory-token`, `/integration/user-ids`.
 5. **Passkeys**: `/webauthn/*` on WebCrypto, plus the one-shot exporter that converts legacy

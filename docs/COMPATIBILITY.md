@@ -213,6 +213,29 @@ Live round trip against the real D1 (throwaway deployment, rows removed afterwar
 returned a challenge, a locally signed challenge returned `200` with a token whose `amr` is
 `["ed25519"]`, replaying the same request answered `400`, and a wrong signature answered `400`.
 
+## Remote approval login
+
+`POST /remote-login/start` takes no credentials: it resolves audiences like every other flow and
+returns `{request_id, exchange_code, confirmation_code, expires_at}` — a 64-hex code the device
+keeps, and an 8-character uppercase code the human reads out. Both are stored only as hashes.
+
+`claim` binds the request to the approving user by the short code (`pending` and
+`approved_user_id IS NULL` are both conditions of the `UPDATE`, so two people cannot claim the
+same request). `pending` first marks stale rows `expired`, then lists what this user still has to
+decide. `approve`/`deny` are conditional on `approved_user_id = caller`, so one user cannot decide
+another's request. `exchange` is unauthenticated by design — the device has no session yet — and
+spends the request with one conditional `UPDATE` before minting an `agent_approval` session, so a
+replayed exchange answers `401 remote_login_unavailable` instead of minting twice.
+
+`POST /session/authorize` delegates: it mints an `sso` session whose `amr` carries the source method
+(`["sso","email_otp"]`), and refuses to put the issuer audience on a non-loopback target, so a
+remote site cannot obtain main-site tokens by delegating through it.
+
+Live run against the real D1 (throwaway deployment, rows deleted afterwards): device sign-in
+produced a token, `start` issued codes, `pending` was empty, `claim` returned the summary,
+`pending` then listed it, `approve` answered `{ok:true}`, `exchange` returned a token pair, and the
+replay answered `401`.
+
 ## Key rotation
 
 `POST /admin/jwks/rotate` promotes STANDBY into CURRENT and mints a fresh STANDBY, in **one D1
