@@ -115,3 +115,21 @@ export async function verifyAccessToken(key: VerifyKey, token: string, nowSecond
   if (typeof claims.sid !== 'string' || claims.sid.length === 0) return null;
   return claims;
 }
+
+/** Header peek, used to pick the key by `kid` before verifying. */
+export function decodeJwtHeader(token: string): { alg?: string; kid?: string; typ?: string } | null {
+  const [encodedHeader] = token.split('.');
+  if (!encodedHeader) return null;
+  try {
+    return JSON.parse(b64urlDecodeText(encodedHeader)) as { alg?: string; kid?: string; typ?: string };
+  } catch {
+    return null;
+  }
+}
+
+/** `aud` is a string for a single audience and an array for several. */
+export function claimAudiences(aud: string | string[] | undefined): string[] {
+  if (typeof aud === 'string') return aud.length === 0 ? [] : [aud];
+  if (Array.isArray(aud)) return aud.filter((value): value is string => typeof value === 'string');
+  return [];
+}

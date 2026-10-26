@@ -65,6 +65,17 @@ export async function currentSigningKey(store: SigningKeyStore): Promise<ActiveS
   };
 }
 
+/** Public half of the key with this `kid`, from either slot — legacy `key_by_kid`. */
+export async function verifyingKeyByKid(
+  store: SigningKeyStore,
+  kid: string,
+): Promise<{ kid: string; publicJwk: Ed25519PublicJwk } | null> {
+  const rows = await ensureSigningKeys(store);
+  const row = rows.find((candidate) => candidate.kid === kid);
+  if (!row) return null;
+  return { kid: row.kid, publicJwk: JSON.parse(row.publicJwk) as Ed25519PublicJwk };
+}
+
 /** `GET /jwks` body: public keys only, CURRENT before STANDBY, exactly as legacy emitted. */
 export async function publicJwksBody(store: SigningKeyStore): Promise<{ keys: Ed25519PublicJwk[] }> {
   const rows = await ensureSigningKeys(store);

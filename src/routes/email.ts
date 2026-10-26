@@ -1,6 +1,6 @@
 import { AudienceError, resolveAudiences } from '../audience';
 import { sha256Hex } from '../crypto/tokens';
-import type { EmailOtpStore, SessionStore, UserStore } from '../email/stores';
+import type { EmailOtpStore, SessionStore, UserStore } from '../stores';
 import { OTP_SECONDS, generateOtpCode, isEmailAddress, isSixDigitCode, normalizeEmail } from '../email/otp';
 import { StrictJsonError, optionalString, parseStrictJsonObject, rejectUnknownKeys, requireString } from '../http/strict-json';
 import { errorResponse, jsonResponse } from '../http/response';
