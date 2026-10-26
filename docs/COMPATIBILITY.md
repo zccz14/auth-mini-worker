@@ -152,6 +152,32 @@ Everything here is designed to fit Workers Free plus D1 Free:
 `send_email` (Cloudflare Email Service) is **not** used: sending to arbitrary recipients needs the
 Workers Paid plan, and it would replace the SMTP accounts rather than keep them.
 
+## Sign-in flow as implemented
+
+`POST /email/start` → code stored as a hash with a 10-minute expiry, then delivered. If delivery
+fails the code is invalidated in the same request, so a user can never face a code they could not
+have received.
+
+`POST /email/verify` → audiences are resolved *before* the code is consumed (a bad `redirect_uri`
+must not burn the user's code), then a single conditional `UPDATE ... WHERE code_hash = ? AND
+consumed_at IS NULL AND expires_at > now` decides success. Two concurrent verifications of the
+same code cannot both win: D1 reports the changed-row count, and the loser gets
+`invalid_email_otp`.
+
+Smoke-tested against the real D1 and the real SMTP account on 2026-10-26 (throwaway deployment,
+deleted afterwards):
+
+| Call | Result |
+|---|---|
+| `GET /jwks` | two keys bootstrapped into D1 and returned |
+| `POST /email/start` with `nope` | `400 invalid_request` |
+| `POST /email/start` with a real address | `200 {"ok":true}` in 3.5 s, message delivered |
+| `POST /email/verify` with a wrong code | `401 invalid_email_otp` |
+| `POST /email/verify` with an extra field | `400 invalid_request` |
+
+Known gap, blocking public exposure: `/email/start` is unauthenticated and unlimited, so it would
+be an open mail-sending endpoint. Rate limiting lands before cutover.
+
 ## Cutover shape
 
 Freeze writes on the legacy server → export SQLite → import into D1 with the transforms above →
