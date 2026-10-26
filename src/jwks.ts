@@ -16,6 +16,12 @@ export interface SigningKeyRow {
 export interface SigningKeyStore {
   list(): Promise<SigningKeyRow[]>;
   insert(row: SigningKeyRow): Promise<void>;
+  /**
+   * Atomic promotion: drop CURRENT, move STANDBY into CURRENT, insert `next` as STANDBY.
+   * Must run as one batch — a half-applied rotation would leave an instance that cannot verify
+   * its own recently issued tokens and cannot sign new ones.
+   */
+  rotate(next: SigningKeyRow): Promise<void>;
 }
 
 const SLOT_ORDER: readonly KeySlot[] = ['CURRENT', 'STANDBY'];
@@ -74,6 +80,38 @@ export async function verifyingKeyByKid(
   const row = rows.find((candidate) => candidate.kid === kid);
   if (!row) return null;
   return { kid: row.kid, publicJwk: JSON.parse(row.publicJwk) as Ed25519PublicJwk };
+}
+
+/**
+ * Port of `rotate_keys`: STANDBY becomes CURRENT, a fresh key becomes STANDBY.
+ *
+ * The new CURRENT is one downstream caches already have, which is the point of keeping a
+ * published spare. The old CURRENT disappears, so tokens it signed stop verifying — that is the
+ * legacy behaviour, and it bounds the blast radius to the access-token lifetime.
+ */
+export async function rotateSigningKeys(
+  store: SigningKeyStore,
+): Promise<{ keys: Array<{ slot: string; public_jwk: Ed25519PublicJwk }> }> {
+  const rows = await ensureSigningKeys(store);
+  const standby = rows.find((row) => row.slot === 'STANDBY');
+  if (!standby) throw new Error('missing_standby_key');
+
+  const pair = await generateKeyPair();
+  const next: SigningKeyRow = {
+    slot: 'STANDBY',
+    kid: uuidv4(),
+    alg: 'EdDSA',
+    publicJwk: JSON.stringify(toPublicJwk(pair.privateJwk)),
+    privateJwk: JSON.stringify(toPrivateJwk(pair.privateJwk)),
+  };
+  await store.rotate(next);
+
+  return {
+    keys: [
+      { slot: 'CURRENT', public_jwk: JSON.parse(standby.publicJwk) as Ed25519PublicJwk },
+      { slot: 'STANDBY', public_jwk: JSON.parse(next.publicJwk) as Ed25519PublicJwk },
+    ],
+  };
 }
 
 /** `GET /jwks` body: public keys only, CURRENT before STANDBY, exactly as legacy emitted. */

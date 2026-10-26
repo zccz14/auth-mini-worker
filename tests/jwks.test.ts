@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SigningKeyRow, SigningKeyStore } from '../src/jwks';
-import { adminJwksBody, currentSigningKey, ensureSigningKeys, publicJwksBody } from '../src/jwks';
+import { adminJwksBody, currentSigningKey, ensureSigningKeys, publicJwksBody, rotateSigningKeys } from '../src/jwks';
 
 class MemoryStore implements SigningKeyStore {
   rows: SigningKeyRow[] = [];
@@ -11,6 +11,14 @@ class MemoryStore implements SigningKeyStore {
 
   async insert(row: SigningKeyRow): Promise<void> {
     this.rows.push(row);
+  }
+
+  async rotate(next: SigningKeyRow): Promise<void> {
+    const standby = this.rows.find((row) => row.slot === 'STANDBY');
+    if (!standby) throw new Error('missing_standby_key');
+    this.rows = this.rows.filter((row) => row.slot !== 'CURRENT');
+    standby.slot = 'CURRENT';
+    this.rows.push(next);
   }
 }
 
@@ -42,5 +50,35 @@ describe('signing keys', () => {
     const key = await currentSigningKey(store);
     expect(key.privateJwk.d).toHaveLength(43);
     expect(key.publicJwk).toEqual({ kty: 'OKP', crv: 'Ed25519', x: key.privateJwk.x });
+  });
+});
+
+describe('rotation', () => {
+  it('promotes STANDBY to CURRENT and mints a fresh STANDBY', async () => {
+    const store = new MemoryStore();
+    const before = await publicJwksBody(store);
+    const [oldCurrent, oldStandby] = before.keys;
+
+    const rotated = await rotateSigningKeys(store);
+    expect(rotated.keys.map((entry) => entry.slot)).toEqual(['CURRENT', 'STANDBY']);
+    expect(rotated.keys[0]!.public_jwk).toEqual(oldStandby);
+    expect(rotated.keys[1]!.public_jwk).not.toEqual(oldCurrent);
+    expect(rotated.keys[1]!.public_jwk).not.toEqual(oldStandby);
+
+    const after = await publicJwksBody(store);
+    expect(after.keys).toHaveLength(2);
+    expect(after.keys[0]).toEqual(oldStandby);
+    expect(after.keys).not.toContainEqual(oldCurrent);
+    expect(store.rows.map((row) => row.slot).sort()).toEqual(['CURRENT', 'STANDBY']);
+  });
+
+  it('self-heals a missing STANDBY slot before promoting it', async () => {
+    const store = new MemoryStore();
+    await ensureSigningKeys(store);
+    store.rows = store.rows.filter((row) => row.slot === 'CURRENT');
+
+    const rotated = await rotateSigningKeys(store);
+    expect(rotated.keys.map((entry) => entry.slot)).toEqual(['CURRENT', 'STANDBY']);
+    expect(store.rows.map((row) => row.slot).sort()).toEqual(['CURRENT', 'STANDBY']);
   });
 });

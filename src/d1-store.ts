@@ -22,6 +22,17 @@ export class D1SigningKeyStore implements SigningKeyStore {
     }));
   }
 
+  /** One batch, so a rotation can never be observed half applied. */
+  async rotate(next: SigningKeyRow): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("DELETE FROM jwks_keys WHERE id = 'CURRENT'"),
+      this.db.prepare("UPDATE jwks_keys SET id = 'CURRENT' WHERE id = 'STANDBY'"),
+      this.db
+        .prepare('INSERT INTO jwks_keys (id, kid, alg, public_jwk, private_jwk) VALUES (?1, ?2, ?3, ?4, ?5)')
+        .bind(next.slot, next.kid, next.alg, next.publicJwk, next.privateJwk),
+    ]);
+  }
+
   async insert(row: SigningKeyRow): Promise<void> {
     await this.db
       .prepare('INSERT INTO jwks_keys (id, kid, alg, public_jwk, private_jwk) VALUES (?1, ?2, ?3, ?4, ?5)')

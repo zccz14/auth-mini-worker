@@ -213,6 +213,20 @@ Live round trip against the real D1 (throwaway deployment, rows removed afterwar
 returned a challenge, a locally signed challenge returned `200` with a token whose `amr` is
 `["ed25519"]`, replaying the same request answered `400`, and a wrong signature answered `400`.
 
+## Key rotation
+
+`POST /admin/jwks/rotate` promotes STANDBY into CURRENT and mints a fresh STANDBY, in **one D1
+batch** — a half-applied rotation would leave an instance that can neither verify its recently
+issued tokens nor sign new ones.
+
+The promoted key is one downstream caches already hold, which is the point of keeping a spare
+published. The old CURRENT leaves `/jwks`, so tokens it signed stop verifying; the blast radius is
+the 900 s access-token lifetime, not a revocation list.
+
+Verified against the real D1 with a throwaway Worker that called the same function: `before`
+CURRENT `bM4n…`/STANDBY `ShBt…`, after rotation CURRENT `ShBt…`/STANDBY `j79c…`, and `/jwks`
+served the promoted pair with the old CURRENT gone.
+
 ## Admin bootstrap
 
 `PUT /admin/setup` installs the first admin Ed25519 key and the user row that owns it; a second
