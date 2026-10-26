@@ -76,8 +76,9 @@ pnpm db:migrate:local         # apply migrations/ to the local D1
 7. ~~**Remote approval login** (`/remote-login/*`, `/session/authorize`).~~ Done.
 8. ~~**Identity directory**: `/admin/users`, `/admin/user-directory-token`,
    `/integration/user-ids`.~~ Done, including a live rotation that kills the old token.
-9. **Passkeys**: `/webauthn/*` on WebCrypto, plus the one-shot exporter that converts legacy
-   `passkey_json` rows.
+9. ~~**Passkeys**: `/webauthn/*` on WebCrypto, plus the one-shot exporter that converts legacy
+   `passkey_json` rows.~~ Routes are done and verified against a software authenticator; the
+   exporter (`tools/webauthn-export`) lands with the cutover work.
 10. **Login GUI** as Static Assets, at parity with the embedded `ui-web` build.
 11. **Rate limiting** for `/email/*` and `/remote-login/start` before anything is publicly
     reachable.

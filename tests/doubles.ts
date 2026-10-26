@@ -12,6 +12,9 @@ import type {
   UserStore,
   UserSummary,
   DirectoryStore,
+  WebauthnChallenge,
+  WebauthnChallengeType,
+  WebauthnStore,
   AdminCredentialSummary,
   AdminStore,
   AppConfig,
@@ -303,6 +306,122 @@ export class MemoryDirectoryStore implements DirectoryStore {
 
   async listUsers(): Promise<UserSummary[]> {
     return this.users;
+  }
+}
+
+export class MemoryWebauthnStore implements WebauthnStore {
+  challenges = new Map<string, WebauthnChallenge>();
+  credentials: Array<{
+    credentialId: string;
+    userId: string;
+    passkeyJson: string;
+    rpId: string;
+    lastUsedAt: string | null;
+  }> = [];
+
+  async expirePendingRegistrations(userId: string, now: string): Promise<void> {
+    for (const challenge of this.challenges.values()) {
+      if (challenge.type === 'register' && challenge.userId === userId && challenge.consumedAt === null) {
+        challenge.consumedAt = now;
+      }
+    }
+  }
+
+  async insertChallenge(challenge: {
+    requestId: string;
+    type: WebauthnChallengeType;
+    stateJson: string;
+    userId: string | null;
+    expiresAt: string;
+    rpId: string;
+    rpName: string;
+    origin: string;
+    now: string;
+  }): Promise<void> {
+    this.challenges.set(challenge.requestId, {
+      requestId: challenge.requestId,
+      type: challenge.type,
+      stateJson: challenge.stateJson,
+      userId: challenge.userId,
+      expiresAt: challenge.expiresAt,
+      rpId: challenge.rpId,
+      rpName: challenge.rpName,
+      origin: challenge.origin,
+      consumedAt: null,
+    });
+  }
+
+  async findChallenge(requestId: string, type: WebauthnChallengeType): Promise<WebauthnChallenge | null> {
+    const row = this.challenges.get(requestId);
+    return row && row.type === type ? { ...row } : null;
+  }
+
+  async consumeChallenge(requestId: string, type: WebauthnChallengeType, now: string): Promise<boolean> {
+    const row = this.challenges.get(requestId);
+    if (!row || row.type !== type || row.consumedAt !== null) return false;
+    row.consumedAt = now;
+    return true;
+  }
+
+  async hasPasskey(userId: string): Promise<boolean> {
+    return this.credentials.some((row) => row.userId === userId);
+  }
+
+  async findCredential(credentialId: string, rpId: string): Promise<{ userId: string; passkeyJson: string } | null> {
+    const row = this.credentials.find((entry) => entry.credentialId === credentialId && entry.rpId === rpId);
+    return row ? { userId: row.userId, passkeyJson: row.passkeyJson } : null;
+  }
+
+  /** Mirrors the D1 batch: both statements run, so a tripped guard still spends the challenge. */
+  async completeRegistration(input: {
+    requestId: string;
+    credentialId: string;
+    userId: string;
+    passkeyJson: string;
+    rpId: string;
+    firstOnly: boolean;
+    now: string;
+  }): Promise<{ consumed: boolean; stored: boolean }> {
+    const consumed = await this.consumeChallenge(input.requestId, 'register', input.now);
+    const blocked = input.firstOnly && (await this.hasPasskey(input.userId));
+    if (blocked) return { consumed, stored: false };
+    if (this.credentials.some((entry) => entry.credentialId === input.credentialId)) {
+      return { consumed, stored: false };
+    }
+    this.credentials.push({
+      credentialId: input.credentialId,
+      userId: input.userId,
+      passkeyJson: input.passkeyJson,
+      rpId: input.rpId,
+      lastUsedAt: null,
+    });
+    return { consumed, stored: true };
+  }
+
+  async completeAuthentication(input: {
+    requestId: string;
+    credentialId: string;
+    rpId: string;
+    passkeyJson: string;
+    now: string;
+  }): Promise<{ consumed: boolean; updated: boolean }> {
+    const consumed = await this.consumeChallenge(input.requestId, 'authenticate', input.now);
+    const row = this.credentials.find(
+      (entry) => entry.credentialId === input.credentialId && entry.rpId === input.rpId,
+    );
+    if (!row) return { consumed, updated: false };
+    row.passkeyJson = input.passkeyJson;
+    row.lastUsedAt = input.now;
+    return { consumed, updated: true };
+  }
+
+  async deleteCredential(credentialId: string, userId: string): Promise<boolean> {
+    const index = this.credentials.findIndex(
+      (entry) => entry.credentialId === credentialId && entry.userId === userId,
+    );
+    if (index < 0) return false;
+    this.credentials.splice(index, 1);
+    return true;
   }
 }
 

@@ -204,3 +204,66 @@ export interface DirectoryStore {
   listUserIds(): Promise<string[]>;
   listUsers(now: string): Promise<UserSummary[]>;
 }
+
+export type WebauthnChallengeType = 'register' | 'authenticate';
+
+export interface WebauthnChallenge {
+  requestId: string;
+  type: WebauthnChallengeType;
+  stateJson: string;
+  userId: string | null;
+  expiresAt: string;
+  rpId: string;
+  rpName: string;
+  origin: string;
+  consumedAt: string | null;
+}
+
+export interface StoredPasskeyRow {
+  userId: string;
+  passkeyJson: string;
+}
+
+export interface WebauthnStore {
+  /** Kills the caller's unused registration challenges; the legacy handler does this per options call. */
+  expirePendingRegistrations(userId: string, now: string): Promise<void>;
+  insertChallenge(challenge: {
+    requestId: string;
+    type: WebauthnChallengeType;
+    stateJson: string;
+    userId: string | null;
+    expiresAt: string;
+    rpId: string;
+    rpName: string;
+    origin: string;
+    now: string;
+  }): Promise<void>;
+  findChallenge(requestId: string, type: WebauthnChallengeType): Promise<WebauthnChallenge | null>;
+  /** One conditional UPDATE: true only when this call spent a live, unconsumed challenge. */
+  consumeChallenge(requestId: string, type: WebauthnChallengeType, now: string): Promise<boolean>;
+  hasPasskey(userId: string): Promise<boolean>;
+  findCredential(credentialId: string, rpId: string): Promise<StoredPasskeyRow | null>;
+  /**
+   * Spend the registration challenge and store the credential in one batch. With `firstOnly` the
+   * insert additionally requires that the user still has no passkey, which is how an Ed25519
+   * session is held to "first passkey only" even if another ceremony landed in between.
+   */
+  completeRegistration(input: {
+    requestId: string;
+    credentialId: string;
+    userId: string;
+    passkeyJson: string;
+    rpId: string;
+    firstOnly: boolean;
+    now: string;
+  }): Promise<{ consumed: boolean; stored: boolean }>;
+  /** Spend the assertion challenge and move the counter, in one batch. */
+  completeAuthentication(input: {
+    requestId: string;
+    credentialId: string;
+    rpId: string;
+    passkeyJson: string;
+    now: string;
+  }): Promise<{ consumed: boolean; updated: boolean }>;
+  deleteCredential(credentialId: string, userId: string): Promise<boolean>;
+}
