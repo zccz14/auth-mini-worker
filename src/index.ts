@@ -16,8 +16,11 @@ import { sendSmtpMail, workerSocketFactory } from './mail/smtp';
 import type { EmailDeps } from './routes/email';
 import { handleEmailStart, handleEmailVerify } from './routes/email';
 import { D1Ed25519Store } from './d1-ed25519';
+import { D1DirectoryStore } from './d1-directory';
 import { D1RemoteLoginStore } from './d1-remote-login';
 import type { AdminDeps } from './routes/admin';
+import type { DirectoryDeps } from './routes/directory';
+import { handleAdminUsers, handleIntegrationUserIds, handleUserDirectoryToken } from './routes/directory';
 import type { RemoteLoginDeps } from './routes/remote-login';
 import {
   handleRemoteLoginApprove,
@@ -100,6 +103,13 @@ async function remoteLoginDeps(request: Request, env: Env): Promise<RemoteLoginD
   };
 }
 
+async function directoryDeps(request: Request, env: Env): Promise<DirectoryDeps> {
+  return {
+    ...(await adminDeps(request, env)),
+    directoryStore: new D1DirectoryStore(env.DB),
+  };
+}
+
 async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
   return {
     ...(await sessionDeps(request, env)),
@@ -138,6 +148,11 @@ const routes: Route[] = [
   route('PUT', '/admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))),
   route('GET', '/admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))),
   route('PUT', '/admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))),
+  route('GET', '/admin/users', async (request, env) => handleAdminUsers(request, await directoryDeps(request, env))),
+  route('GET', '/admin/user-directory-token', async (request, env) => handleUserDirectoryToken(request, await directoryDeps(request, env))),
+  route('POST', '/admin/user-directory-token', async (request, env) => handleUserDirectoryToken(request, await directoryDeps(request, env))),
+  route('DELETE', '/admin/user-directory-token', async (request, env) => handleUserDirectoryToken(request, await directoryDeps(request, env))),
+  route('GET', '/integration/user-ids', async (request, env) => handleIntegrationUserIds(request, await directoryDeps(request, env))),
   route('GET', '/admin/jwks', async (request, env) => handleAdminJwks(request, await adminDeps(request, env))),
   route('POST', '/admin/jwks/rotate', async (request, env) => handleAdminJwksRotate(request, await adminDeps(request, env))),
   route('POST', '/ed25519/start', async (request, env) => handleEd25519Start(request, await ed25519Deps(request, env))),

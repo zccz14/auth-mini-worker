@@ -184,3 +184,23 @@ export interface RemoteLoginStore {
   /** approved -> consumed, one conditional UPDATE. */
   consume(requestId: string, exchangeCodeHash: string, now: string): Promise<boolean>;
 }
+
+export interface UserSummary {
+  id: string;
+  email: string | null;
+  emailVerifiedAt: string | null;
+  createdAt: string;
+  activeSessionCount: number;
+  passkeyCount: number;
+  ed25519Count: number;
+}
+
+export interface DirectoryStore {
+  tokenStatus(): Promise<{ configured: boolean; createdAt: string | null }>;
+  /** Writes a new hash, returns the new creation timestamp; the plaintext never comes back. */
+  rotateToken(tokenHash: string): Promise<string>;
+  clearToken(): Promise<void>;
+  matchesTokenHash(tokenHash: string): Promise<boolean>;
+  listUserIds(): Promise<string[]>;
+  listUsers(now: string): Promise<UserSummary[]>;
+}

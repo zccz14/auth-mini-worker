@@ -10,6 +10,13 @@ import type {
   SessionRow,
   SessionStore,
   UserStore,
+  UserSummary,
+  DirectoryStore,
+  AdminCredentialSummary,
+  AdminStore,
+  AppConfig,
+  SmtpInput,
+  SmtpSummary,
 } from '../src/stores';
 import type { SigningKeyRow, SigningKeyStore } from '../src/jwks';
 
@@ -262,5 +269,89 @@ export class MemoryRemoteLoginStore implements RemoteLoginStore {
     if (!row || row.exchangeCodeHash !== exchangeCodeHash || row.status !== 'approved' || row.expiresAt <= now) return false;
     row.status = 'consumed';
     return true;
+  }
+}
+
+export class MemoryDirectoryStore implements DirectoryStore {
+  tokenHash: string | null = null;
+  createdAt: string | null = null;
+  ids: string[] = [];
+  users: UserSummary[] = [];
+
+  async tokenStatus(): Promise<{ configured: boolean; createdAt: string | null }> {
+    return { configured: this.tokenHash !== null, createdAt: this.createdAt };
+  }
+
+  async rotateToken(tokenHash: string): Promise<string> {
+    this.tokenHash = tokenHash;
+    this.createdAt = '2026-10-26T09:00:00.000Z';
+    return this.createdAt;
+  }
+
+  async clearToken(): Promise<void> {
+    this.tokenHash = null;
+    this.createdAt = null;
+  }
+
+  async matchesTokenHash(tokenHash: string): Promise<boolean> {
+    return this.tokenHash !== null && this.tokenHash === tokenHash;
+  }
+
+  async listUserIds(): Promise<string[]> {
+    return [...this.ids];
+  }
+
+  async listUsers(): Promise<UserSummary[]> {
+    return this.users;
+  }
+}
+
+export class MemoryAdminStore implements AdminStore {
+  config: AppConfig = {
+    issuer: 'https://auth.ntnl.io',
+    rpId: 'auth.ntnl.io',
+    brandName: 'auth-mini',
+    brandBackgroundImage: '',
+    adminUserId: 'admin-user',
+  };
+  smtp: Array<SmtpSummary & { password: string }> = [];
+  adminCredential: AdminCredentialSummary | null = null;
+  private nextId = 1;
+
+  async readConfig(): Promise<AppConfig> {
+    return { ...this.config };
+  }
+
+  async writeConfig(config: Omit<AppConfig, 'adminUserId'>): Promise<void> {
+    this.config = { ...this.config, ...config };
+  }
+
+  async listSmtpSummaries(): Promise<SmtpSummary[]> {
+    return this.smtp.map(({ password: _password, ...summary }) => summary);
+  }
+
+  async replaceSmtp(inputs: readonly SmtpInput[]): Promise<void> {
+    const existing = new Set(this.smtp.map((row) => row.id));
+    const retained = new Set<number>();
+    for (const input of inputs) {
+      if (input.id === null) {
+        this.smtp.push({ ...input, id: this.nextId++, isActive: true });
+        continue;
+      }
+      if (!existing.has(input.id) || retained.has(input.id)) throw new Error('invalid_smtp_id');
+      retained.add(input.id);
+      const row = this.smtp.find((candidate) => candidate.id === input.id)!;
+      Object.assign(row, { ...input, password: input.password === '' ? row.password : input.password });
+    }
+    this.smtp = this.smtp.filter((row) => retained.has(row.id) || !existing.has(row.id));
+  }
+
+  async firstAdminCredential(): Promise<AdminCredentialSummary | null> {
+    return this.adminCredential;
+  }
+
+  async installAdminEd25519(name: string, publicKey: string, now: string): Promise<void> {
+    this.config.adminUserId = this.config.adminUserId ?? 'admin-user';
+    this.adminCredential = { id: 'cred-1', name, public_key: publicKey, last_used_at: null, created_at: now };
   }
 }
