@@ -29,3 +29,27 @@ export function base58Decode(value: string): Uint8Array {
   });
   return output;
 }
+
+/** Bitcoin-alphabet base58 encode, the inverse of `base58Decode`. */
+export function base58Encode(bytes: Uint8Array): string {
+  const digits: number[] = [];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let index = 0; index < digits.length; index += 1) {
+      carry += digits[index]! << 8;
+      digits[index] = carry % 58;
+      carry = Math.floor(carry / 58);
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = Math.floor(carry / 58);
+    }
+  }
+  let output = '';
+  for (const byte of bytes) {
+    if (byte !== 0) break;
+    output += '1';
+  }
+  for (let index = digits.length - 1; index >= 0; index -= 1) output += ALPHABET[digits[index]!];
+  return output;
+}

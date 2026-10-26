@@ -197,6 +197,22 @@ Smoke-tested against the real D1 on 2026-10-26 (throwaway deployment, deleted af
 `POST /session/refresh` with an unknown session `401 session_invalidated`,
 `POST /session/logout` without a token `401 invalid_access_token`.
 
+## Ed25519 device auth
+
+| Route | Rule |
+|---|---|
+| `POST /ed25519/start` | Body is the device's **public key** (base58, 32 bytes), not a credential id. It must match exactly one registered credential; the response is `{request_id, challenge}` with a 300 s challenge of 64 hex characters. Unknown keys answer `400 invalid_ed25519_authentication`. |
+| `POST /ed25519/verify` | Audiences resolve first, then the challenge must be unconsumed and unexpired, the signature is checked, and only then is the challenge spent by one conditional `UPDATE`. Replay answers `400 invalid_ed25519_authentication`. |
+| `/ed25519/credentials` (GET/POST), `/ed25519/credentials/{id}` (PATCH/DELETE) | Require a session established with `email_otp` or `webauthn` — an `ed25519` or delegated session gets `403 insufficient_authentication_method`. Duplicate public keys answer `400 invalid_ed25519_credential`; unknown ids answer `404 credential_not_found`. |
+
+Two byte-level details everything depends on: the signed message is the **raw UTF-8 bytes of the
+challenge string**, and the signature is **base64url without padding**. Both are pinned by tests
+that sign with a real Ed25519 key.
+
+Live round trip against the real D1 (throwaway deployment, rows removed afterwards): start
+returned a challenge, a locally signed challenge returned `200` with a token whose `amr` is
+`["ed25519"]`, replaying the same request answered `400`, and a wrong signature answered `400`.
+
 ## Admin bootstrap
 
 `PUT /admin/setup` installs the first admin Ed25519 key and the user row that owns it; a second
