@@ -268,4 +268,11 @@ describe('GET/PUT /admin/config', () => {
     );
     expect(unknownId.status).toBe(400);
   });
+
+  it('tells browsers not to cache authorization state', async () => {
+    const { deps } = await harness({ admin: false });
+    const state = await handleAdminSetup(request('GET'), deps);
+    expect(state.status).toBe(200);
+    expect(state.headers.get('cache-control')).toBe('no-store');
+  });
 });

@@ -19,7 +19,11 @@ export class ApiError extends Error {
 export function jsonResponse(body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json; charset=utf-8', ...CORS_HEADERS, ...extraHeaders },
+    // Authorization state changes underneath a browser: /admin/setup flips from "uninitialized" to
+    // "initialized" the moment an admin is claimed. A JSON body without an explicit policy may be
+    // reused heuristically, which serves an old answer to a question whose whole point is freshness.
+    // Callers that genuinely want caching (none today) can override it through extraHeaders.
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...CORS_HEADERS, ...extraHeaders },
   });
 }
 
