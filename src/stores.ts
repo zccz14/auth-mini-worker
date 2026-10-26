@@ -150,3 +150,37 @@ export interface Ed25519Store {
   consumeChallenge(requestId: string, now: string): Promise<boolean>;
   touchLastUsed(credentialId: string, now: string): Promise<void>;
 }
+
+export interface RemoteLoginRow {
+  requestId: string;
+  redirectUri: string | null;
+  audiences: string[];
+  expiresAt: string;
+  createdAt: string;
+  status: string;
+  approvedUserId: string | null;
+}
+
+export interface RemoteLoginStore {
+  create(row: {
+    requestId: string;
+    exchangeCodeHash: string;
+    confirmationCodeHash: string;
+    redirectUri: string | null;
+    audiences: readonly string[];
+    expiresAt: string;
+    now: string;
+  }): Promise<void>;
+  /** Binds a pending request to the user who is approving it; false when nothing matched. */
+  claim(requestId: string, userId: string, confirmationCodeHash: string, now: string): Promise<boolean>;
+  findIdByConfirmationCode(confirmationCodeHash: string, now: string): Promise<string | null>;
+  expireStale(now: string): Promise<void>;
+  listPending(userId: string, now: string): Promise<RemoteLoginRow[]>;
+  summary(requestId: string, userId: string): Promise<RemoteLoginRow | null>;
+  /** pending -> approved/denied, only for the user the request is bound to. */
+  decide(requestId: string, userId: string, status: 'approved' | 'denied', now: string): Promise<boolean>;
+  /** Reads the approved request without consuming it. */
+  findApproved(requestId: string, exchangeCodeHash: string, now: string): Promise<{ userId: string; audiences: string[] } | null>;
+  /** approved -> consumed, one conditional UPDATE. */
+  consume(requestId: string, exchangeCodeHash: string, now: string): Promise<boolean>;
+}

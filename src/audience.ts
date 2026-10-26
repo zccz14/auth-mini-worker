@@ -22,6 +22,16 @@ function isAllowedLoopback(hostname: string): boolean {
   return LOOPBACK_HOSTS.has(normalizeHost(hostname));
 }
 
+/** Legacy `is_loopback_redirect`: only these targets may receive the issuer audience. */
+export function isLoopbackRedirect(redirectUri: string | undefined): boolean {
+  if (redirectUri === undefined) return false;
+  try {
+    return isAllowedLoopback(new URL(redirectUri).hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function issuerAudience(issuer: string): string {
   let url: URL;
   try {
