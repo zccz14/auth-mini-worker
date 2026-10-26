@@ -20,7 +20,21 @@ export interface UserStore {
   /** Insert-or-ignore by email, then return the id, so an address never forks into two users. */
   ensureByEmail(email: string, now: string): Promise<string>;
   findIdByEmail(email: string): Promise<string | null>;
+  findEmail(userId: string): Promise<string | null>;
   isAdmin(userId: string): Promise<boolean>;
+}
+
+export interface SessionRow {
+  id: string;
+  userId: string;
+  refreshTokenHash: string;
+  authMethod: string;
+  sourceAuthMethod: string | null;
+  audiences: string[];
+  ip: string | null;
+  userAgent: string | null;
+  expiresAt: string;
+  createdAt: string;
 }
 
 export interface SessionRecord {
@@ -37,6 +51,17 @@ export interface SessionRecord {
 
 export interface SessionStore {
   insert(session: SessionRecord): Promise<void>;
+  find(id: string): Promise<SessionRow | null>;
+  /** Conditional rotation: true only when the stored hash still equals `expectedHash`. */
+  rotate(id: string, expectedHash: string, nextHash: string, nextExpiresAt: string, now: string): Promise<boolean>;
+  /** Legacy logout truncates the session by moving `expires_at` to now. */
+  expire(id: string, now: string): Promise<void>;
+  listActive(userId: string, now: string): Promise<SessionRow[]>;
+}
+
+export interface CredentialStore {
+  listWebauthn(userId: string): Promise<Array<Record<string, unknown>>>;
+  listEd25519(userId: string): Promise<Array<Record<string, unknown>>>;
 }
 
 export interface AppMetaStore {

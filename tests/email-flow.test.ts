@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { EmailOtpRecord, EmailOtpStore, SessionRecord, SessionStore, UserStore } from '../src/email/stores';
+import { MemoryKeyStore, MemoryOtpStore, MemorySessionStore, MemoryUserStore } from './doubles';
 import { normalizeEmail, isEmailAddress, isSixDigitCode, generateOtpCode } from '../src/email/otp';
 import { sha256Hex } from '../src/crypto/tokens';
-import type { SigningKeyRow, SigningKeyStore } from '../src/jwks';
 import { ensureSigningKeys, currentSigningKey } from '../src/jwks';
 import { verifyAccessToken } from '../src/jwt';
 import type { SmtpConfig, SmtpConfigStore } from '../src/mail/config';
@@ -11,71 +10,6 @@ import { handleEmailStart, handleEmailVerify } from '../src/routes/email';
 
 const NOW = new Date('2026-10-26T04:00:00.000Z');
 const ISSUER = 'https://auth.ntnl.io';
-
-class MemoryOtpStore implements EmailOtpStore {
-  rows = new Map<string, EmailOtpRecord>();
-
-  async upsert(email: string, codeHash: string, expiresAt: string): Promise<void> {
-    this.rows.set(email, { codeHash, expiresAt, consumedAt: null });
-  }
-
-  async invalidate(email: string): Promise<void> {
-    const row = this.rows.get(email);
-    if (row) row.consumedAt = NOW.toISOString();
-  }
-
-  async consume(email: string, codeHash: string, now: string): Promise<boolean> {
-    const row = this.rows.get(email);
-    if (!row || row.consumedAt !== null || row.expiresAt <= now || row.codeHash !== codeHash) return false;
-    row.consumedAt = now;
-    return true;
-  }
-
-  async find(email: string): Promise<EmailOtpRecord | null> {
-    return this.rows.get(email) ?? null;
-  }
-}
-
-class MemoryUserStore implements UserStore {
-  byEmail = new Map<string, string>();
-  adminId: string | null = null;
-
-  async ensureByEmail(email: string): Promise<string> {
-    const existing = this.byEmail.get(email);
-    if (existing) return existing;
-    const id = `user-${this.byEmail.size + 1}`;
-    this.byEmail.set(email, id);
-    return id;
-  }
-
-  async findIdByEmail(email: string): Promise<string | null> {
-    return this.byEmail.get(email) ?? null;
-  }
-
-  async isAdmin(userId: string): Promise<boolean> {
-    return this.adminId === userId;
-  }
-}
-
-class MemorySessionStore implements SessionStore {
-  rows: SessionRecord[] = [];
-
-  async insert(session: SessionRecord): Promise<void> {
-    this.rows.push(session);
-  }
-}
-
-class MemoryKeyStore implements SigningKeyStore {
-  rows: SigningKeyRow[] = [];
-
-  async list(): Promise<SigningKeyRow[]> {
-    return [...this.rows];
-  }
-
-  async insert(row: SigningKeyRow): Promise<void> {
-    this.rows.push(row);
-  }
-}
 
 const smtpConfig: SmtpConfig = {
   id: 1,

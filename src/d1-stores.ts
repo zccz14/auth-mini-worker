@@ -1,4 +1,13 @@
-import type { EmailOtpRecord, EmailOtpStore, AppMetaStore, SessionRecord, SessionStore, UserStore } from './email/stores';
+import type {
+  AppMetaStore,
+  CredentialStore,
+  EmailOtpRecord,
+  EmailOtpStore,
+  SessionRecord,
+  SessionRow,
+  SessionStore,
+  UserStore,
+} from './stores';
 import type { SmtpConfig, SmtpConfigStore } from './mail/config';
 import { uuidv4 } from './crypto/tokens';
 
@@ -18,6 +27,11 @@ export class D1UserStore implements UserStore {
     const id = await this.findIdByEmail(email);
     if (id === null) throw new Error('user_not_found_after_insert');
     return id;
+  }
+
+  async findEmail(userId: string): Promise<string | null> {
+    const row = await this.db.prepare('SELECT email FROM users WHERE id = ?1 LIMIT 1').bind(userId).first<{ email: string | null }>();
+    return row?.email ?? null;
   }
 
   async findIdByEmail(email: string): Promise<string | null> {
@@ -73,30 +87,6 @@ export class D1EmailOtpStore implements EmailOtpStore {
   }
 }
 
-export class D1SessionStore implements SessionStore {
-  constructor(private readonly db: D1Database) {}
-
-  async insert(session: SessionRecord): Promise<void> {
-    await this.db
-      .prepare(
-        `INSERT INTO sessions (id, user_id, refresh_token_hash, auth_method, source_auth_method, audience, ip, user_agent, expires_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
-      )
-      .bind(
-        session.id,
-        session.userId,
-        session.refreshTokenHash,
-        session.authMethod,
-        session.sourceAuthMethod,
-        JSON.stringify([...session.audiences]),
-        session.ip,
-        session.userAgent,
-        session.expiresAt,
-      )
-      .run();
-  }
-}
-
 export class D1AppMetaStore implements AppMetaStore {
   constructor(private readonly db: D1Database) {}
 
@@ -144,6 +134,142 @@ export class D1SmtpConfigStore implements SmtpConfigStore {
       fromName: row.from_name,
       secure: row.secure === 1,
       weight: row.weight,
+    }));
+  }
+}
+
+const SESSION_COLUMNS =
+  'id, user_id, refresh_token_hash, auth_method, source_auth_method, audience, ip, user_agent, expires_at, created_at';
+
+interface SessionRowShape {
+  id: string;
+  user_id: string;
+  refresh_token_hash: string;
+  auth_method: string;
+  source_auth_method: string | null;
+  audience: string;
+  ip: string | null;
+  user_agent: string | null;
+  expires_at: string;
+  created_at: string;
+}
+
+function toSessionRow(row: SessionRowShape): SessionRow {
+  let audiences: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(row.audience);
+    if (Array.isArray(parsed)) audiences = parsed.filter((value): value is string => typeof value === 'string');
+  } catch {
+    // legacy rows could hold a bare string; treat it as a single audience
+    if (row.audience.length > 0) audiences = [row.audience];
+  }
+  return {
+    id: row.id,
+    userId: row.user_id,
+    refreshTokenHash: row.refresh_token_hash,
+    authMethod: row.auth_method,
+    sourceAuthMethod: row.source_auth_method,
+    audiences,
+    ip: row.ip,
+    userAgent: row.user_agent,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+  };
+}
+
+export class D1SessionStore implements SessionStore {
+  constructor(private readonly db: D1Database) {}
+
+  async insert(session: SessionRecord): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO sessions (id, user_id, refresh_token_hash, auth_method, source_auth_method, audience, ip, user_agent, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+      )
+      .bind(
+        session.id,
+        session.userId,
+        session.refreshTokenHash,
+        session.authMethod,
+        session.sourceAuthMethod,
+        JSON.stringify([...session.audiences]),
+        session.ip,
+        session.userAgent,
+        session.expiresAt,
+      )
+      .run();
+  }
+
+  async find(id: string): Promise<SessionRow | null> {
+    const row = await this.db
+      .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?1 LIMIT 1`)
+      .bind(id)
+      .first<SessionRowShape>();
+    return row ? toSessionRow(row) : null;
+  }
+
+  async rotate(id: string, expectedHash: string, nextHash: string, nextExpiresAt: string, now: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE sessions SET refresh_token_hash = ?1, expires_at = ?2
+         WHERE id = ?3 AND refresh_token_hash = ?4 AND expires_at > ?5`,
+      )
+      .bind(nextHash, nextExpiresAt, id, expectedHash, now)
+      .run();
+    return (result.meta.changes ?? 0) === 1;
+  }
+
+  async expire(id: string, now: string): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET expires_at = ?1 WHERE id = ?2 AND expires_at > ?1').bind(now, id).run();
+  }
+
+  async listActive(userId: string, now: string): Promise<SessionRow[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT ${SESSION_COLUMNS} FROM sessions WHERE user_id = ?1 AND expires_at > ?2
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .bind(userId, now)
+      .all<SessionRowShape>();
+    return results.map(toSessionRow);
+  }
+}
+
+export class D1CredentialStore implements CredentialStore {
+  constructor(private readonly db: D1Database) {}
+
+  async listWebauthn(userId: string): Promise<Array<Record<string, unknown>>> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT credential_id, rp_id, last_used_at, created_at FROM webauthn_credentials
+         WHERE user_id = ?1 ORDER BY created_at ASC, credential_id ASC`,
+      )
+      .bind(userId)
+      .all<{ credential_id: string; rp_id: string; last_used_at: string | null; created_at: string }>();
+    return results.map((row) => ({
+      id: row.credential_id,
+      credential_id: row.credential_id,
+      transports: [],
+      rp_id: row.rp_id,
+      last_used_at: row.last_used_at,
+      created_at: row.created_at,
+    }));
+  }
+
+  async listEd25519(userId: string): Promise<Array<Record<string, unknown>>> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT id, name, public_key, last_used_at, created_at FROM ed25519_credentials
+         WHERE user_id = ?1 ORDER BY created_at ASC, id ASC`,
+      )
+      .bind(userId)
+      .all<{ id: string; name: string; public_key: string; last_used_at: string | null; created_at: string }>();
+    return results.map((row) => ({
+      id: row.id,
+      name: row.name,
+      public_key: row.public_key,
+      last_used_at: row.last_used_at,
+      created_at: row.created_at,
     }));
   }
 }

@@ -1,5 +1,5 @@
 import { ACCESS_TOKEN_SECONDS, REFRESH_TOKEN_SECONDS, nowRfc3339Millis, randomHex, sha256Hex, uuidv4 } from './crypto/tokens';
-import type { SessionRecord, SessionStore } from './email/stores';
+import type { SessionRecord, SessionStore } from './stores';
 import type { SigningKeyStore } from './jwks';
 import { currentSigningKey } from './jwks';
 import { buildAccessTokenClaims, signAccessToken } from './jwt';

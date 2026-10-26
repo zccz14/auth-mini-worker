@@ -178,6 +178,25 @@ deleted afterwards):
 Known gap, blocking public exposure: `/email/start` is unauthenticated and unlimited, so it would
 be an open mail-sending endpoint. Rate limiting lands before cutover.
 
+## Session lifecycle
+
+| Route | Rule |
+|---|---|
+| `POST /session/refresh` | row must exist and be live; a mismatched refresh token answers `401 session_superseded`, and so does losing the conditional `UPDATE` race. The refresh token rotates and the 30-day window restarts on every successful refresh. |
+| `POST /session/logout` | expires the caller's own session by moving `expires_at` to now — the same trick the legacy server used, so an already-issued access token dies on the next call that touches the session row. |
+| `GET /me` | requires a live session **and** the self audience: a token delegated to a downstream app cannot read the profile. Returns the legacy shape, including `webauthn_credentials`, `ed25519_credentials` (read straight from their tables, so migrated rows show up before those flows are implemented) and `active_sessions`. |
+| `GET /time` | `{now, now_ms, iso}` with `cache-control: no-store`. |
+
+Access-token authentication is stricter than signature checking: after verifying the JWT by
+`kid`, the session row must still exist, still be unexpired, still belong to the same user, and
+still carry the same audience set as the token. Audiences are therefore part of the session
+identity, not just a claim.
+
+Smoke-tested against the real D1 on 2026-10-26 (throwaway deployment, deleted afterwards):
+`GET /time` correct, `GET /me` without a token `401 invalid_access_token`,
+`POST /session/refresh` with an unknown session `401 session_invalidated`,
+`POST /session/logout` without a token `401 invalid_access_token`.
+
 ## Cutover shape
 
 Freeze writes on the legacy server → export SQLite → import into D1 with the transforms above →
