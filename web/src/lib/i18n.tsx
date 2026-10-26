@@ -1,94 +1,719 @@
-import { createContext, createElement, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import type { PropsWithChildren } from 'react';
 
-/**
- * Flat key-to-pair dictionary, no nested maps and no lazy loading: the bundle cannot build with a
- * missing translation because the array index is part of the type.
- */
-export const messages = {
-  'app.name': ['Auth Mini', 'Auth Mini'],
-  'app.tagline': ['一个身份，通行所有产品。', 'One identity across every product.'],
-  'language.toggle': ['切换语言', 'Switch language'],
-  'language.zh': ['中文', 'Chinese'],
-  'language.en': ['English', 'English'],
-  'login.title': ['登录', 'Sign in'],
-  'login.subtitle': ['使用邮箱验证码或通行密钥登录。', 'Sign in with an email code or a passkey.'],
-  'login.email.label': ['邮箱', 'Email'],
-  'login.email.placeholder': ['you@example.com', 'you@example.com'],
-  'login.email.send': ['发送验证码', 'Send code'],
-  'login.code.label': ['验证码', 'Verification code'],
-  'login.code.placeholder': ['6 位数字', '6-digit code'],
-  'login.code.verify': ['验证并登录', 'Verify and sign in'],
-  'login.code.resend': ['重新发送', 'Send again'],
-  'login.code.sent': ['验证码已发送到 {email}', 'A code is on its way to {email}'],
-  'login.passkey': ['使用通行密钥', 'Use a passkey'],
-  'login.passkey.hint': ['用指纹、面容或设备 PIN 直接确认。', 'Confirm with fingerprint, face or device PIN.'],
-  'login.or': ['或', 'or'],
-  'login.busy': ['处理中…', 'Working…'],
-  'login.failed': ['登录失败，请重试。', 'Sign-in failed. Try again.'],
-  'login.expired': ['登录状态已失效，请重新登录后继续。', 'That session is no longer valid. Sign in again to continue.'],
-  'login.invalidRequest': ['登录链接无效：{reason}', 'This sign-in link is invalid: {reason}'],
-  'login.reason.invalid_redirect_uri': ['回调地址不是有效的 http 或 https URL。', 'The callback is not a valid http or https URL.'],
-  'login.reason.audience_rules': ['aud / audiences 参数不符合规则，或未包含回调域名。', 'The aud / audiences parameters break the rules or omit the callback host.'],
-  'login.reason.https_required': ['非本地回环的回调必须使用 HTTPS。', 'Only loopback callbacks may use plain HTTP.'],
-  'authorize.title': ['继续前往 {target}', 'Continue to {target}'],
-  'authorize.body': ['将使用你的 Auth Mini 账号为它签发独立会话。', 'A separate session will be issued for it from your Auth Mini account.'],
-  'authorize.loopback': ['本地开发应用 {host}', 'Local development app {host}'],
-  'authorize.scope': ['请求访问 {audiences}', 'Requests access to {audiences}'],
-  'authorize.continue': ['继续', 'Continue'],
-  'authorize.signInFirst': ['请先登录，再继续。', 'Sign in first to continue.'],
-  'home.title': ['已登录', 'Signed in'],
-  'home.signedInAs': ['当前账号：{email}', 'Signed in as {email}'],
-  'home.signOut': ['退出登录', 'Sign out'],
-  'home.signIn': ['去登录', 'Sign in'],
-  'home.notSignedIn': ['尚未登录。', 'Not signed in.'],
-  'common.back': ['返回', 'Back'],
-} satisfies Record<string, readonly [string, string]>;
+export const LOCALES = ['en', 'zh-CN'] as const;
 
-export type MessageKey = keyof typeof messages;
-export type Language = 'zh' | 'en';
+export type Locale = (typeof LOCALES)[number];
 
-interface I18nValue {
-  lang: Language;
-  setLang: (lang: Language) => void;
-  t: (key: MessageKey, vars?: Record<string, string>) => string;
+const LOCALE_STORAGE_KEY = 'auth-mini.gui.locale';
+
+export const en = {
+  'common.language': 'Language',
+  'directory.title': 'User ID directory token',
+  'directory.description':
+    'Allows a backend such as Linkit to read only the complete user ID list. No email, session or credential information is included.',
+  'directory.configured':
+    'A token is configured. Its value cannot be retrieved.',
+  'directory.unconfigured':
+    'No token is configured. Directory access is disabled.',
+  'directory.generate': 'Generate token',
+  'directory.rotate': 'Replace token',
+  'directory.revoke': 'Revoke token',
+  'directory.confirmRotate':
+    'Replace the token? The previous token will stop working immediately. Update Linkit afterward.',
+  'directory.confirmRevoke': 'Revoke the token and stop directory access?',
+  'directory.once':
+    'Copy this token into Linkit’s administration settings now. It is only shown once.',
+  'directory.token': 'Generated directory token',
+  'directory.copy': 'Copy token',
+  'directory.dismiss': 'I have saved the token',
+  'directory.error': 'Unable to update the directory token.',
+  'directory.copyError': 'Unable to copy. Select and copy the token manually.',
+  'common.english': 'English',
+  'common.chinese': '中文',
+  'common.loadingAuthMini': 'Loading auth-mini...',
+  'common.loading': 'Loading...',
+  'common.unavailable': 'Unavailable',
+  'common.noneGenerated': 'None generated yet.',
+  'common.noDerivedKey': 'No seed-derived public key yet.',
+  'common.admin': 'Admin',
+  'common.signOut': 'Sign out',
+  'common.email': 'Email',
+  'common.passkey': 'PassKey',
+  'common.ed25519': 'ED25519',
+  'common.account': 'Account',
+  'common.issuer': 'Issuer',
+  'common.rpId': 'Passkey RP ID',
+  'common.brandName': 'Brand name',
+  'common.brandBackgroundImage': 'Brand background image',
+  'common.credentialName': 'Credential name',
+  'common.publicKey': 'Public key',
+  'common.ed25519PublicKey':
+    'ED25519 public key — register and share this value',
+  'common.ed25519PrivateKey':
+    'ED25519 private key — Solana-compatible, keep secret',
+  'common.publicKeyHint':
+    'Base58-encoded 32-byte public key. Auth Mini registers only this value.',
+  'common.privateKeyWarning':
+    'This base58 64-byte Solana-compatible private key includes its public key. Never send or paste it into an untrusted app. Save it in a password manager or secure key store. Auth Mini never receives it.',
+  'common.copyPublicKey': 'Copy public key',
+  'common.copyPrivateKey': 'Copy private key',
+  'common.copied': 'Copied',
+  'common.emailAddress': 'Email address',
+  'common.oneTimeCode': 'One-time code',
+  'common.privateKey': 'Private key (base58, 64 bytes, Solana-compatible)',
+  'common.smtpHost': 'SMTP host',
+  'common.smtpPort': 'SMTP port',
+  'common.smtpUsername': 'SMTP username',
+  'common.smtpPassword': 'SMTP password',
+  'common.fromEmail': 'From email',
+  'common.fromName': 'From name',
+  'common.password': 'Password',
+  'common.username': 'Username',
+  'common.action': 'Action',
+  'common.remove': 'Remove',
+  'shell.admin': 'Admin',
+  'shell.signOut': 'Sign out',
+  'shell.navigation': 'Primary navigation',
+  'shell.workspace': 'Workspace',
+  'shell.security': 'Security',
+  'shell.system': 'System',
+  'shell.overview': 'Overview',
+  'shell.account': 'Account',
+  'shell.email': 'Email',
+  'shell.passkey': 'PassKey',
+  'shell.ed25519': 'ED25519',
+  'shell.sessions': 'Sessions',
+  'shell.remoteLogin': 'Remote login',
+  'shell.openMenu': 'Open navigation',
+  'shell.closeMenu': 'Close navigation',
+  'setup.defaultCredentialName': 'Administrator ED25519 key',
+  'setup.generateError': 'Unable to generate key.',
+  'setup.initializeError': 'Initialization failed.',
+  'setup.title': 'Initialize auth-mini',
+  'setup.description':
+    'Create the administrator credential that secures this server.',
+  'setup.privateKeySaved': 'I have saved the private key.',
+  'setup.generate': 'Generate ED25519 key',
+  'setup.generating': 'Generating...',
+  'setup.initializing': 'Initializing...',
+  'setup.complete': 'Complete initialization',
+  'login.title': 'Sign in',
+  'login.description': 'Choose a secure way to continue.',
+  'login.continueDescription':
+    'Continue to the application that opened this window.',
+  'login.serverNotConfigured': 'Auth server is not configured',
+  'login.invalidRequest': 'Invalid login request',
+  'login.destination.self': 'You are signing in to Auth Mini',
+  'login.destination.selfDescription': 'This session is for Auth Mini itself.',
+  'login.destination.remote': 'You are signing in to',
+  'login.destination.local': 'Local development app',
+  'login.destination.requestingAudience': 'Requesting access to',
+  'login.passkeySignIn': 'Sign In with PassKey',
+  'login.email.send': 'Send email code',
+  'login.email.sending': 'Sending code...',
+  'login.email.verify': 'Verify and continue',
+  'login.email.verifying': 'Verifying...',
+  'login.ed25519.signIn': 'Sign in with ED25519',
+  'login.ed25519.signingIn': 'Signing in...',
+  'login.email.sent': 'Check your email for the one-time code.',
+  'login.ssoChecking': 'Checking your sign-in status...',
+  'login.ssoRedirecting': 'Continuing with your existing sign-in...',
+  'login.ssoUnavailable':
+    'Your existing sign-in could not be used. Sign in to continue.',
+  'login.startError': 'Unable to start email sign-in.',
+  'login.signInError': 'Sign-in failed.',
+  'login.remote.start': 'Approve on another device',
+  'login.remote.starting': 'Starting approval request...',
+  'login.remote.waitingTitle': 'Waiting for approval',
+  'login.remote.waitingDescription':
+    'On your signed-in Auth Mini device, open your account and enter this confirmation code.',
+  'login.remote.code': 'Confirmation code',
+  'login.remote.expiresAt': 'This request expires at {time}.',
+  'home.loadError': 'Unable to load account.',
+  'home.registerPasskeyError': 'Unable to register passkey.',
+  'home.generateKeyError': 'Unable to generate ED25519 key.',
+  'home.registerKeyError': 'Unable to register ED25519 key.',
+  'home.deleteConfirm': 'Remove this credential?',
+  'home.deleteError': 'Unable to delete credential.',
+  'home.deleteFailed': 'Delete failed.',
+  'home.kickError': 'Unable to kick session.',
+  'home.kickRefreshWarning':
+    'Session updated, but account data could not be refreshed.',
+  'home.remoteLogin.title': 'Approve a remote login',
+  'home.remoteLogin.description':
+    'Enter the confirmation code shown in the other browser, then approve or deny the request.',
+  'home.remoteLogin.code': 'Confirmation code',
+  'home.remoteLogin.claim': 'Find request',
+  'home.remoteLogin.claiming': 'Finding request...',
+  'home.remoteLogin.approve': 'Approve',
+  'home.remoteLogin.approving': 'Approving...',
+  'home.remoteLogin.deny': 'Deny',
+  'home.remoteLogin.noRequests':
+    'No remote login requests are waiting for your decision.',
+  'home.remoteLogin.loadError': 'Unable to load remote login requests.',
+  'home.remoteLogin.claimError': 'Unable to find that remote login request.',
+  'home.remoteLogin.decisionError':
+    'Unable to update that remote login request.',
+  'home.remoteLogin.expiresAt': 'Expires {time}',
+  'home.description': 'Your current authentication state.',
+  'home.userId': 'User ID',
+  'home.sessionId': 'Session ID',
+  'home.emailDescription':
+    'Keep this verified address current. Changes require a code sent to the new address.',
+  'home.passkeyDescription':
+    'Register browser passkeys and remove old authenticators.',
+  'home.ed25519Description':
+    'Generate a key, save the private key, then register the public key.',
+  'home.sessionsDescription':
+    'Review every active session, its signed-in website, and kick peers as needed.',
+  'home.credentialCreated': 'Created {date}',
+  'home.noVerifiedEmail': 'No verified email',
+  'home.loadingAccount': 'Loading account...',
+  'home.emailVerified': 'Verified email is active.',
+  'home.emailNotVerified': 'No verified email on this account.',
+  'home.newEmail': 'New email address',
+  'home.sendEmailChangeCode': 'Send verification code',
+  'home.sendingEmailChangeCode': 'Sending code...',
+  'home.emailChangeCode': 'Enter the code sent to',
+  'home.emailChangeOtp': 'Email change verification code',
+  'home.emailChangeCodeSent':
+    'A verification code was sent to the new email address.',
+  'home.confirmEmailChange': 'Confirm email change',
+  'home.confirmingEmailChange': 'Confirming change...',
+  'home.cancelEmailChange': 'Cancel',
+  'home.emailChangeSuccess': 'Your email address has been updated.',
+  'home.emailChangeStartError':
+    'Unable to send an email change verification code.',
+  'home.emailChangeVerifyError': 'Unable to verify the email change code.',
+  'home.emailAlreadyInUse': 'This email address is already in use.',
+  'home.invalidEmailChangeOtp': 'This verification code is invalid or expired.',
+  'home.registerPasskey': 'Register passkey',
+  'home.registering': 'Registering...',
+  'passkeyRegistration.title': 'Register a PassKey',
+  'passkeyRegistration.description':
+    'Add a passkey to your Auth Mini account from this secure window.',
+  'passkeyRegistration.signInRequired':
+    'Sign in to Auth Mini before registering a passkey.',
+  'passkeyRegistration.registered': 'Your passkey is ready to use.',
+  'home.defaultEd25519Name': 'ED25519 key',
+  'home.generateKey': 'Generate key',
+  'home.registerPublicKey': 'Register public key',
+  'home.publicKey': 'ED25519 public key',
+  'home.activeSessions': 'Active Sessions',
+  'home.noActiveSessions': 'No active sessions.',
+  'home.noCredentials': 'No credentials.',
+  'home.authMethod': 'Auth Method',
+  'home.audience': 'Audience (aud)',
+  'home.createdAt': 'Created At',
+  'home.expiresAt': 'Expires At',
+  'home.ip': 'IP',
+  'home.userAgent': 'User-Agent',
+  'home.kick': 'Kick',
+  'home.kicking': 'Kicking...',
+  'overview.title': 'Keep your sign-in system in order.',
+  'overview.description':
+    'Manage your Auth Mini account, credentials, sessions, and remote login approvals from one compact workspace.',
+  'overview.sessionStatus': 'Session',
+  'overview.connected': 'Connected',
+  'overview.disconnected': 'Disconnected',
+  'overview.workspaceTitle': 'Workspace',
+  'overview.workspaceDescription': 'Choose an area to review or change.',
+  'overview.accountDescription': 'View your user ID and current session.',
+  'overview.emailDescription': 'Update the verified email on your account.',
+  'overview.credentials': 'Credentials',
+  'overview.credentialsDescription': 'Register passkeys and ED25519 keys.',
+  'overview.sessionsDescription':
+    'Review active sessions and sign out devices.',
+  'overview.remoteDescription': 'Approve sign-ins started on another device.',
+  'overview.securityTitle': 'Security at a glance',
+  'overview.securityDescription':
+    'Use a dedicated page for each credential and session task.',
+  'overview.passkeyHint': 'Browser-based sign-in without a password.',
+  'overview.ed25519Hint':
+    'A portable signing credential for supported clients.',
+  'overview.sessionsHint': 'See where your account is currently signed in.',
+  'admin.loadError': 'Unable to load admin data.',
+  'admin.saveError': 'Unable to save configuration.',
+  'admin.exportError': 'Unable to export database.',
+  'admin.exportFailed': 'Database export failed.',
+  'admin.rotateError': 'Unable to rotate JWKs.',
+  'admin.title': 'Admin',
+  'admin.overview': 'Admin overview',
+  'admin.overviewDescription':
+    'Administrator and public identity of this Auth Mini instance.',
+  'admin.noUsers': 'No users found.',
+  'admin.description': 'Configure this auth-mini instance and inspect users.',
+  'admin.configurationDescription':
+    'Configure public identity, branding, and optional email delivery.',
+  'admin.jwksDescription':
+    'Public signing keys in the CURRENT and STANDBY slots.',
+  'admin.usersDescription': 'Current users and credential counts.',
+  'admin.userId': 'Admin user ID',
+  'admin.secureSmtp': 'Secure SMTP',
+  'admin.configuration': 'Configuration',
+  'admin.loadingSettings': 'Loading...',
+  'admin.configureSmtp': 'Configure SMTP',
+  'admin.leavePassword': 'Leave blank to keep current password',
+  'admin.identitySection': 'Public identity and branding',
+  'admin.identitySectionDescription':
+    'These values identify this Auth Mini instance and appear in sign-in flows.',
+  'admin.issuerDescription':
+    'The public base URL that issues sessions and tokens.',
+  'admin.rpIdDescription':
+    'The domain allowed to use passkeys for this instance.',
+  'admin.brandNameDescription':
+    'The name shown to users on the sign-in and account pages.',
+  'admin.brandBackgroundDescription':
+    'An optional image URL used behind the sign-in page.',
+  'admin.smtpSection': 'Email delivery',
+  'admin.smtpSectionDescription':
+    'Add one or more SMTP servers. Auth Mini distributes mail using each server’s weight.',
+  'admin.smtpEmpty':
+    'No SMTP servers configured. Email sign-in is unavailable.',
+  'admin.addSmtp': 'Add SMTP server',
+  'admin.removeSmtp': 'Remove SMTP server',
+  'admin.smtpNumber': 'SMTP server {number}',
+  'admin.smtpHostDescription': 'The hostname of the SMTP server.',
+  'admin.smtpPortDescription': 'The TCP port used by the SMTP server.',
+  'admin.smtpUsernameDescription':
+    'The username used to authenticate with SMTP.',
+  'admin.smtpPasswordDescription':
+    'The password used to authenticate with SMTP.',
+  'admin.fromEmailDescription':
+    'The address shown in the From header of outgoing mail.',
+  'admin.fromNameDescription':
+    'The display name shown alongside the From address.',
+  'admin.smtpWeight': 'Delivery weight',
+  'admin.smtpWeightDescription':
+    'Relative share of outgoing mail. Higher values receive more messages.',
+  'admin.smtpSecureDescription':
+    'Use the secure SMTP transport for this server.',
+  'admin.save': 'Save configuration',
+  'admin.saving': 'Saving...',
+  'admin.jwks': 'JWKs',
+  'admin.rotate': 'JWK Rotate',
+  'admin.rotating': 'Rotating...',
+  'admin.users': 'Users',
+  'admin.user': 'User',
+  'admin.sessions': 'Sessions',
+  'admin.passkeys': 'Passkeys',
+  'admin.exportDatabase': 'Export SQLite database',
+  'admin.exporting': 'Exporting...',
+  'admin.resourcesTitle': 'System resources',
+  'admin.resourcesDescription':
+    'Live host and SQLite usage. Refreshes automatically every 5 seconds.',
+  'admin.refreshEvery5s': 'Refreshes every 5 seconds',
+  'admin.sampledAt': 'Sampled {time}',
+  'admin.resourcesUnavailable': 'System resources are unavailable',
+  'admin.resourcesUnavailableDescription':
+    'The latest resource sample could not be read. The dashboard will retry automatically.',
+  'admin.cpu': 'CPU',
+  'admin.memory': 'Memory',
+  'admin.network': 'Network',
+  'admin.disk': 'Disk',
+  'admin.sqlite': 'SQLite',
+  'admin.load1m': '1-minute load',
+  'admin.logicalCpus': 'Logical CPUs',
+  'admin.authMiniRss': 'Auth Mini RSS',
+  'admin.otherSystemMemory': 'Other application memory',
+  'admin.systemAvailableMemory': 'System available memory',
+  'admin.swap': 'Swap',
+  'admin.received': 'Received',
+  'admin.transmitted': 'Transmitted',
+  'admin.networkInterfaces': 'Network interfaces',
+  'admin.available': 'Available',
+  'admin.mountPoint': 'Mount point',
+  'admin.mainFile': 'Main file',
+  'admin.walFile': 'WAL file',
+  'admin.shmFile': 'SHM file',
+  'admin.reclaimableSpace': 'Reclaimable space',
+  'admin.requestAudit': 'Request audit',
+  'admin.requestAuditDescription':
+    'In-memory access counts for every API endpoint, plus calls to unknown endpoints. Counters reset when the server restarts.',
+  'admin.requestAuditSince': 'Counting since {time}',
+  'admin.requestAuditUnavailable': 'Request audit is unavailable',
+  'admin.requestAuditUnavailableDescription':
+    'The latest access counts could not be read. The panel will retry automatically.',
+  'admin.method': 'Method',
+  'admin.endpoint': 'Endpoint',
+  'admin.requestCount': 'Requests',
+  'admin.noRequests': 'No requests recorded yet.',
+  'admin.path': 'Path',
+  'admin.lastSeen': 'Last seen',
+  'admin.unknownEndpoints': 'Unknown endpoints',
+  'admin.unknownEndpointsDescription':
+    'Requests that did not match any API endpoint, including scanners and misconfigured clients.',
+  'admin.noUnknownEndpoints': 'No unknown-endpoint requests.',
+} as const;
+
+type TranslationKey = keyof typeof en;
+
+export const zhCN: Record<TranslationKey, string> = {
+  'common.language': '语言',
+  'directory.title': '用户 ID 目录 Token',
+  'directory.description':
+    '允许 Linkit 等后端仅读取完整用户 ID 列表，不包含邮箱、会话或凭据信息。',
+  'directory.configured': '已配置 Token，无法再次读取原值。',
+  'directory.unconfigured': '尚未配置 Token，目录访问已关闭。',
+  'directory.generate': '生成 Token',
+  'directory.rotate': '重置 Token',
+  'directory.revoke': '撤销 Token',
+  'directory.confirmRotate':
+    '确认重置 Token？旧 Token 将立即失效，之后需要更新 Linkit 配置。',
+  'directory.confirmRevoke': '确认撤销 Token 并关闭目录访问？',
+  'directory.once': '请立即复制此 Token 到 Linkit 管理设置，仅显示一次。',
+  'directory.token': '已生成的目录 Token',
+  'directory.copy': '复制 Token',
+  'directory.dismiss': '我已保存 Token',
+  'directory.error': '无法更新目录 Token。',
+  'directory.copyError': '复制失败，请选中 Token 手动复制。',
+  'common.english': 'English',
+  'common.chinese': '中文',
+  'common.loadingAuthMini': '正在加载 auth-mini...',
+  'common.loading': '正在加载...',
+  'common.unavailable': '不可用',
+  'common.noneGenerated': '尚未生成。',
+  'common.noDerivedKey': '尚未从种子派生公钥。',
+  'common.admin': '管理',
+  'common.signOut': '退出登录',
+  'common.email': '邮箱',
+  'common.passkey': '通行密钥',
+  'common.ed25519': 'ED25519',
+  'common.account': '账户',
+  'common.issuer': '签发者',
+  'common.rpId': '通行密钥 RP ID',
+  'common.brandName': '品牌名称',
+  'common.brandBackgroundImage': '品牌背景图片',
+  'common.credentialName': '凭据名称',
+  'common.publicKey': '公钥',
+  'common.ed25519PublicKey': 'ED25519 公钥 — 可注册、可分享',
+  'common.ed25519PrivateKey': 'ED25519 私钥 — Solana 兼容，必须保密',
+  'common.publicKeyHint': 'base58 编码的 32 字节公钥。Auth Mini 只会注册此值。',
+  'common.privateKeyWarning':
+    '这是 base58 编码的 64 字节 Solana 兼容私钥，包含公钥。切勿发送给服务端或粘贴到不受信任的应用。请保存到密码管理器或安全密钥存储。Auth Mini 永远不会接收它。',
+  'common.copyPublicKey': '复制公钥',
+  'common.copyPrivateKey': '复制私钥',
+  'common.copied': '已复制',
+  'common.emailAddress': '邮箱地址',
+  'common.oneTimeCode': '一次性验证码',
+  'common.privateKey': '私钥（base58，64 字节，Solana 兼容）',
+  'common.smtpHost': 'SMTP 主机',
+  'common.smtpPort': 'SMTP 端口',
+  'common.smtpUsername': 'SMTP 用户名',
+  'common.smtpPassword': 'SMTP 密码',
+  'common.fromEmail': '发件邮箱',
+  'common.fromName': '发件人名称',
+  'common.password': '密码',
+  'common.username': '用户名',
+  'common.action': '操作',
+  'common.remove': '移除',
+  'shell.admin': '管理',
+  'shell.signOut': '退出登录',
+  'shell.navigation': '主导航',
+  'shell.workspace': '工作台',
+  'shell.security': '安全',
+  'shell.system': '系统',
+  'shell.overview': '概览',
+  'shell.account': '账户',
+  'shell.email': '邮箱',
+  'shell.passkey': '通行密钥',
+  'shell.ed25519': 'ED25519',
+  'shell.sessions': '会话',
+  'shell.remoteLogin': '远程登录',
+  'shell.openMenu': '打开导航',
+  'shell.closeMenu': '关闭导航',
+  'setup.defaultCredentialName': '管理员 ED25519 密钥',
+  'setup.generateError': '无法生成密钥。',
+  'setup.initializeError': '初始化失败。',
+  'setup.title': '初始化 auth-mini',
+  'setup.description': '创建用于保护此服务器的管理员凭据。',
+  'setup.privateKeySaved': '我已保存私钥。',
+  'setup.generate': '生成 ED25519 密钥',
+  'setup.generating': '正在生成...',
+  'setup.initializing': '正在初始化...',
+  'setup.complete': '完成初始化',
+  'login.title': '登录',
+  'login.description': '选择一种安全的方式继续。',
+  'login.continueDescription': '继续访问打开此窗口的应用。',
+  'login.serverNotConfigured': '尚未配置认证服务器',
+  'login.invalidRequest': '登录请求无效',
+  'login.destination.self': '你正在登录到 Auth Mini',
+  'login.destination.selfDescription': '此会话用于 Auth Mini 自身。',
+  'login.destination.remote': '你正在登录到',
+  'login.destination.local': '本地开发应用',
+  'login.destination.requestingAudience': '请求访问',
+  'login.passkeySignIn': '使用通行密钥登录',
+  'login.email.send': '发送邮箱验证码',
+  'login.email.sending': '正在发送验证码...',
+  'login.email.verify': '验证并继续',
+  'login.email.verifying': '正在验证...',
+  'login.ed25519.signIn': '使用 ED25519 登录',
+  'login.ed25519.signingIn': '正在登录...',
+  'login.email.sent': '请在邮箱中查收一次性验证码。',
+  'login.ssoChecking': '正在检查登录状态...',
+  'login.ssoRedirecting': '正在使用已有登录状态继续...',
+  'login.ssoUnavailable': '无法使用已有登录状态，请重新登录后继续。',
+  'login.startError': '无法开始邮箱登录。',
+  'login.signInError': '登录失败。',
+  'login.remote.start': '在其他设备上批准',
+  'login.remote.starting': '正在创建批准请求…',
+  'login.remote.waitingTitle': '正在等待批准',
+  'login.remote.waitingDescription':
+    '请在已登录 Auth Mini 的其他设备上打开账户页面，并输入下方确认码。',
+  'login.remote.code': '确认码',
+  'login.remote.expiresAt': '此请求将于 {time} 到期。',
+  'home.loadError': '无法加载账户。',
+  'home.registerPasskeyError': '无法注册通行密钥。',
+  'home.generateKeyError': '无法生成 ED25519 密钥。',
+  'home.registerKeyError': '无法注册 ED25519 密钥。',
+  'home.deleteConfirm': '要移除此凭据吗？',
+  'home.deleteError': '无法删除凭据。',
+  'home.deleteFailed': '删除失败。',
+  'home.kickError': '无法终止会话。',
+  'home.kickRefreshWarning': '会话已更新，但无法刷新账户数据。',
+  'home.remoteLogin.title': '批准远程登录',
+  'home.remoteLogin.description':
+    '输入另一浏览器显示的确认码，然后批准或拒绝该请求。',
+  'home.remoteLogin.code': '确认码',
+  'home.remoteLogin.claim': '查找请求',
+  'home.remoteLogin.claiming': '正在查找请求…',
+  'home.remoteLogin.approve': '批准',
+  'home.remoteLogin.approving': '正在批准…',
+  'home.remoteLogin.deny': '拒绝',
+  'home.remoteLogin.noRequests': '当前没有等待你决定的远程登录请求。',
+  'home.remoteLogin.loadError': '无法加载远程登录请求。',
+  'home.remoteLogin.claimError': '无法找到该远程登录请求。',
+  'home.remoteLogin.decisionError': '无法更新该远程登录请求。',
+  'home.remoteLogin.expiresAt': '于 {time} 到期',
+  'home.description': '您当前的认证状态。',
+  'home.userId': '用户 ID',
+  'home.sessionId': '会话 ID',
+  'home.emailDescription':
+    '请保持已验证邮箱为最新状态；更改时需验证发送到新邮箱的验证码。',
+  'home.passkeyDescription': '注册浏览器通行密钥，并移除旧的认证器。',
+  'home.ed25519Description': '生成密钥、保存私钥，然后注册公钥。',
+  'home.sessionsDescription':
+    '查看每个活跃会话、其登录的网站，并按需终止其他会话。',
+  'home.credentialCreated': '创建于 {date}',
+  'home.noVerifiedEmail': '没有已验证的邮箱',
+  'home.loadingAccount': '正在加载账户...',
+  'home.emailVerified': '已验证邮箱处于有效状态。',
+  'home.emailNotVerified': '此账户没有已验证的邮箱。',
+  'home.newEmail': '新邮箱地址',
+  'home.sendEmailChangeCode': '发送验证码',
+  'home.sendingEmailChangeCode': '正在发送验证码...',
+  'home.emailChangeCode': '输入发送至以下地址的验证码',
+  'home.emailChangeOtp': '更改邮箱验证码',
+  'home.emailChangeCodeSent': '验证码已发送至新邮箱地址。',
+  'home.confirmEmailChange': '确认更改邮箱',
+  'home.confirmingEmailChange': '正在确认更改...',
+  'home.cancelEmailChange': '取消',
+  'home.emailChangeSuccess': '邮箱地址已更新。',
+  'home.emailChangeStartError': '无法发送更改邮箱验证码。',
+  'home.emailChangeVerifyError': '无法验证更改邮箱验证码。',
+  'home.emailAlreadyInUse': '该邮箱地址已被使用。',
+  'home.invalidEmailChangeOtp': '验证码无效或已过期。',
+  'home.registerPasskey': '注册通行密钥',
+  'home.registering': '正在注册...',
+  'passkeyRegistration.title': '注册通行密钥',
+  'passkeyRegistration.description':
+    '在此安全窗口中为 Auth Mini 账户添加通行密钥。',
+  'passkeyRegistration.signInRequired': '请先登录 Auth Mini，再注册通行密钥。',
+  'passkeyRegistration.registered': '通行密钥已可使用。',
+  'home.defaultEd25519Name': 'ED25519 密钥',
+  'home.generateKey': '生成密钥',
+  'home.registerPublicKey': '注册公钥',
+  'home.publicKey': 'ED25519 公钥',
+  'home.activeSessions': '活跃会话',
+  'home.noActiveSessions': '没有活跃会话。',
+  'home.noCredentials': '没有凭据。',
+  'home.authMethod': '认证方式',
+  'home.audience': '受众（aud）',
+  'home.createdAt': '创建时间',
+  'home.expiresAt': '过期时间',
+  'home.ip': 'IP',
+  'home.userAgent': '用户代理',
+  'home.kick': '终止',
+  'home.kicking': '正在终止...',
+  'overview.title': '让登录系统保持井然有序。',
+  'overview.description':
+    '在一个紧凑的工作台中管理 Auth Mini 账户、凭据、会话和远程登录批准。',
+  'overview.sessionStatus': '会话状态',
+  'overview.connected': '已连接',
+  'overview.disconnected': '未连接',
+  'overview.workspaceTitle': '工作台',
+  'overview.workspaceDescription': '选择需要查看或修改的区域。',
+  'overview.accountDescription': '查看用户 ID 和当前会话。',
+  'overview.emailDescription': '更新账户的已验证邮箱。',
+  'overview.credentials': '凭据',
+  'overview.credentialsDescription': '注册通行密钥和 ED25519 密钥。',
+  'overview.sessionsDescription': '查看活跃会话并退出设备。',
+  'overview.remoteDescription': '批准在其他设备上发起的登录。',
+  'overview.securityTitle': '安全概览',
+  'overview.securityDescription': '每种凭据和会话操作都有独立页面。',
+  'overview.passkeyHint': '无需密码的浏览器登录方式。',
+  'overview.ed25519Hint': '供支持的客户端使用的便携式签名凭据。',
+  'overview.sessionsHint': '查看账户当前登录的位置。',
+  'admin.loadError': '无法加载管理数据。',
+  'admin.saveError': '无法保存配置。',
+  'admin.exportError': '无法导出数据库。',
+  'admin.exportFailed': '数据库导出失败。',
+  'admin.rotateError': '无法轮换 JWK。',
+  'admin.title': '管理',
+  'admin.overview': '管理概览',
+  'admin.overviewDescription': '此 Auth Mini 实例的管理员和公开身份信息。',
+  'admin.noUsers': '暂无用户。',
+  'admin.description': '配置此 auth-mini 实例并查看用户。',
+  'admin.configurationDescription': '配置公开身份、品牌和可选的邮件投递。',
+  'admin.jwksDescription': 'CURRENT 和 STANDBY 插槽中的公开签名密钥。',
+  'admin.usersDescription': '当前用户和凭据数量。',
+  'admin.userId': '管理员用户 ID',
+  'admin.secureSmtp': '安全 SMTP',
+  'admin.configuration': '配置',
+  'admin.loadingSettings': '正在加载...',
+  'admin.configureSmtp': '配置 SMTP',
+  'admin.leavePassword': '留空以保留当前密码',
+  'admin.identitySection': '公开身份和品牌',
+  'admin.identitySectionDescription':
+    '这些值用于标识此 Auth Mini 实例，并会显示在登录流程中。',
+  'admin.issuerDescription': '签发会话和令牌的公开基础地址。',
+  'admin.rpIdDescription': '允许此实例使用通行密钥的域名。',
+  'admin.brandNameDescription': '登录页和账户页向用户显示的名称。',
+  'admin.brandBackgroundDescription': '登录页背景使用的可选图片地址。',
+  'admin.smtpSection': '邮件投递',
+  'admin.smtpSectionDescription':
+    '可以添加一个或多个 SMTP 服务器。Auth Mini 会按每台服务器的权重分配邮件。',
+  'admin.smtpEmpty': '尚未配置 SMTP 服务器，邮箱登录暂不可用。',
+  'admin.addSmtp': '添加 SMTP 服务器',
+  'admin.removeSmtp': '移除 SMTP 服务器',
+  'admin.smtpNumber': 'SMTP 服务器 {number}',
+  'admin.smtpHostDescription': 'SMTP 服务器的主机名。',
+  'admin.smtpPortDescription': 'SMTP 服务器使用的 TCP 端口。',
+  'admin.smtpUsernameDescription': '用于 SMTP 身份验证的用户名。',
+  'admin.smtpPasswordDescription': '用于 SMTP 身份验证的密码。',
+  'admin.fromEmailDescription': '外发邮件 From 标头中显示的地址。',
+  'admin.fromNameDescription': '显示在发件地址旁边的名称。',
+  'admin.smtpWeight': '投递权重',
+  'admin.smtpWeightDescription': '外发邮件的相对占比，权重越高收到的邮件越多。',
+  'admin.smtpSecureDescription': '对该服务器使用安全 SMTP 传输。',
+  'admin.save': '保存配置',
+  'admin.saving': '正在保存...',
+  'admin.jwks': 'JWK',
+  'admin.rotate': '轮换 JWK',
+  'admin.rotating': '正在轮换...',
+  'admin.users': '用户',
+  'admin.user': '用户',
+  'admin.sessions': '会话',
+  'admin.passkeys': '通行密钥',
+  'admin.exportDatabase': '导出 SQLite 数据库',
+  'admin.exporting': '正在导出...',
+  'admin.resourcesTitle': '系统资源',
+  'admin.resourcesDescription': '实时查看主机和 SQLite 用量，每 5 秒自动刷新。',
+  'admin.refreshEvery5s': '每 5 秒刷新',
+  'admin.sampledAt': '采样于 {time}',
+  'admin.resourcesUnavailable': '系统资源暂时不可用',
+  'admin.resourcesUnavailableDescription':
+    '无法读取最新资源采样，面板会自动重试。',
+  'admin.cpu': 'CPU',
+  'admin.memory': '内存',
+  'admin.network': '网络',
+  'admin.disk': '磁盘',
+  'admin.sqlite': 'SQLite',
+  'admin.load1m': '1 分钟负载',
+  'admin.logicalCpus': '逻辑 CPU',
+  'admin.authMiniRss': 'Auth Mini RSS',
+  'admin.otherSystemMemory': '其他应用内存',
+  'admin.systemAvailableMemory': '系统空闲内存',
+  'admin.swap': '交换分区',
+  'admin.received': '接收',
+  'admin.transmitted': '发送',
+  'admin.networkInterfaces': '网络接口',
+  'admin.available': '可用',
+  'admin.mountPoint': '挂载点',
+  'admin.mainFile': '主文件',
+  'admin.walFile': 'WAL 文件',
+  'admin.shmFile': 'SHM 文件',
+  'admin.reclaimableSpace': '可回收空间',
+  'admin.requestAudit': '请求审计',
+  'admin.requestAuditDescription':
+    '内存中统计的各个 API 端点的访问计数，以及未知端点的调用记录，服务器重启后清零。',
+  'admin.requestAuditSince': '统计始于 {time}',
+  'admin.requestAuditUnavailable': '无法读取请求审计',
+  'admin.requestAuditUnavailableDescription':
+    '无法读取最新的访问计数，面板会自动重试。',
+  'admin.method': '方法',
+  'admin.endpoint': '端点',
+  'admin.requestCount': '请求数',
+  'admin.noRequests': '暂未记录到请求。',
+  'admin.path': '路径',
+  'admin.lastSeen': '最近出现',
+  'admin.unknownEndpoints': '未知端点',
+  'admin.unknownEndpointsDescription':
+    '未命中任何 API 端点的请求，包括扫描探测和客户端错误。',
+  'admin.noUnknownEndpoints': '未发现未知端点的调用。',
+};
+
+const dictionaries: Record<Locale, Record<TranslationKey, string>> = {
+  en,
+  'zh-CN': zhCN,
+};
+
+function readInitialLocale(): Locale {
+  if (typeof window === 'undefined') return 'en';
+
+  try {
+    const saved = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (saved && LOCALES.includes(saved as Locale)) return saved as Locale;
+  } catch {
+    // A private browsing policy can deny storage; the browser preference remains usable.
+  }
+
+  return navigator.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
 }
 
-const STORAGE_KEY = 'auth-mini.lang';
-const I18nContext = createContext<I18nValue | null>(null);
-
-function initialLanguage(): Language {
-  const stored = typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY);
-  if (stored === 'zh' || stored === 'en') return stored;
-  return typeof navigator !== 'undefined' && navigator.language.startsWith('zh') ? 'zh' : 'en';
+function interpolate(template: string, values?: Record<string, string>) {
+  if (!values) return template;
+  return template.replace(
+    /\{(\w+)\}/g,
+    (_, name: string) => values[name] ?? `{${name}}`,
+  );
 }
 
-export function I18nProvider({ children }: { children: ReactNode }) {
-  const [lang, setLanguage] = useState<Language>(initialLanguage);
+type I18nContextValue = {
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  t: (key: TranslationKey, values?: Record<string, string>) => string;
+};
 
-  const setLang = useCallback((next: Language) => {
-    setLanguage(next);
+const I18nContext = createContext<I18nContextValue | null>(null);
+
+export function I18nProvider({ children }: PropsWithChildren) {
+  const [locale, setLocale] = useState<Locale>(readInitialLocale);
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
     try {
-      localStorage.setItem(STORAGE_KEY, next);
+      window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
     } catch {
-      // Storage can be unavailable in private modes; the language still applies to this tab.
+      // Language selection still applies for this page when storage is unavailable.
     }
-  }, []);
+  }, [locale]);
 
-  const value = useMemo<I18nValue>(() => {
-    const t = (key: MessageKey, vars?: Record<string, string>) => {
-      const [zh, en] = messages[key];
-      const text = lang === 'zh' ? zh : en;
-      if (!vars) return text;
-      return Object.entries(vars).reduce((acc, [name, replacement]) => acc.replaceAll(`{${name}}`, replacement), text);
-    };
-    return { lang, setLang, t };
-  }, [lang, setLang]);
+  const value = useMemo<I18nContextValue>(
+    () => ({
+      locale,
+      setLocale,
+      t: (key, values) => interpolate(dictionaries[locale][key], values),
+    }),
+    [locale],
+  );
 
-  return createElement(I18nContext.Provider, { value }, children);
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
-export function useI18n(): I18nValue {
+export function useI18n() {
   const value = useContext(I18nContext);
-  if (value === null) throw new Error('useI18n must be used inside I18nProvider');
+  if (!value) throw new Error('useI18n must be used inside I18nProvider');
   return value;
 }

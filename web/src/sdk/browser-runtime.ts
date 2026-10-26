@@ -1,0 +1,1455 @@
+import type {
+  AuthMiniInternal,
+  FetchLike,
+  InternalSdkDeps,
+  Listener,
+  NavigatorCredentialsLike,
+  PersistedSdkState,
+  RedirectSessionInput,
+  SessionResult,
+  SessionSnapshot,
+} from './types.js';
+
+export type BrowserLockManager = {
+  request<T>(
+    name: string,
+    options: { mode: 'exclusive' },
+    callback: () => Promise<T>,
+  ): Promise<T>;
+};
+
+export type BrowserSdkFactoryOptions = {
+  fetch?: FetchLike;
+  lockManager?: BrowserLockManager;
+  now?: () => number;
+  storage?: Storage;
+};
+
+type StorageSync = {
+  getSnapshot?(): PersistedSdkState | null;
+  subscribe(listener: (next: PersistedSdkState | null) => void): () => void;
+};
+
+type InternalRuntimeDeps = InternalSdkDeps & {
+  recoveryTimeoutMs?: number;
+  storageKey?: string;
+  storageSync?: StorageSync | null;
+  withRefreshLock?: <T>(operation: () => Promise<T>) => Promise<T>;
+};
+
+type RequestOptions = {
+  accessToken?: string | null;
+  body?: unknown;
+};
+
+type SessionStore = {
+  getState(): SessionSnapshot;
+  onChange(listener: Listener): () => void;
+  setRecovering(next: PersistedSdkState): void;
+  setAuthenticated(next: PersistedSdkState): void;
+  setAuthenticatedLocal(next: PersistedSdkState): void;
+  setAnonymous(): void;
+  applyPersistedState(next: PersistedSdkState | null): void;
+  setAnonymousLocal(): void;
+};
+
+type WebauthnPublicKeyCredential = {
+  id: string;
+  rawId: ArrayBuffer | ArrayBufferView;
+  type: string;
+  response: {
+    clientDataJSON: ArrayBuffer | ArrayBufferView;
+    getTransports?: () => string[];
+    attestationObject?: ArrayBuffer | ArrayBufferView | null;
+    authenticatorData?: ArrayBuffer | ArrayBufferView | null;
+    signature?: ArrayBuffer | ArrayBufferView | null;
+    userHandle?: ArrayBuffer | ArrayBufferView | null;
+  };
+  getClientExtensionResults?: () => unknown;
+  clientExtensionResults?: unknown;
+};
+
+type RegistrationPublicKey = Record<string, unknown> & {
+  challenge: string;
+  user: Record<string, unknown> & { id: string };
+  excludeCredentials?: Array<Record<string, unknown> & { id: string }>;
+};
+
+type AuthenticationPublicKey = Record<string, unknown> & {
+  challenge: string;
+  allowCredentials?: Array<Record<string, unknown> & { id: string }>;
+};
+
+type RegistrationOptionsResponse = {
+  request_id: string;
+  publicKey: RegistrationPublicKey;
+};
+
+type AuthenticationOptionsResponse = {
+  request_id: string;
+  publicKey: AuthenticationPublicKey;
+};
+
+type CredentialOptions = CredentialCreationOptions | CredentialRequestOptions;
+
+let runtimeCache: ReturnType<typeof createRuntime> | null = null;
+
+export function createAuthMiniInternal(
+  input: InternalSdkDeps,
+): AuthMiniInternal {
+  return getRuntime().createAuthMiniInternal(input) as AuthMiniInternal;
+}
+
+export function createBrowserSdkInternal(
+  baseUrl: string,
+  options: BrowserSdkFactoryOptions = {},
+): AuthMiniInternal {
+  return getRuntime().createBrowserSdkInternal({
+    ...options,
+    baseUrl,
+  }) as AuthMiniInternal;
+}
+
+export function renderBrowserRuntimeSource(): string {
+  return `(${createRuntime.toString()})()`;
+}
+
+function getRuntime() {
+  runtimeCache ??= createRuntime();
+  return runtimeCache;
+}
+
+function createRuntime() {
+  const SDK_STORAGE_KEY = 'auth-mini.sdk';
+  const BACKGROUND_REFRESH_LEEWAY_MS = 10_000;
+  const BACKGROUND_REFRESH_RETRY_MS = 10_000;
+  const MAX_TIMEOUT_MS = 2_147_483_647;
+  const browserRefreshCoordinators = new WeakMap<
+    Storage,
+    Map<string, ReturnType<typeof createBrowserRefreshCoordinator>>
+  >();
+
+  // @ts-expect-error preserve extracted helper signature
+  function createSdkError(code, message) {
+    const error = new Error(`${code}: ${message}`) as Error & {
+      code?: string;
+      error?: string;
+      status?: number;
+    };
+    error.name = 'AuthMiniSdkError';
+    error.code = code;
+    return error;
+  }
+
+  // @ts-expect-error preserve extracted helper signature
+  function createRequestError(status, payload) {
+    const error = createSdkError(
+      'request_failed',
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Request failed with status ${status}`,
+    );
+    error.status = status;
+    if (payload && typeof payload === 'object') {
+      Object.assign(error, payload);
+    }
+    if (!('error' in error)) {
+      error.error = 'request_failed';
+    }
+    return error;
+  }
+
+  function resolveSdkStorage(input: {
+    storage?: Storage;
+    getDefaultStorage: () => Storage | undefined;
+  }) {
+    if (input.storage) {
+      return input.storage;
+    }
+    let storage;
+    try {
+      storage = input.getDefaultStorage();
+    } catch {
+      throw createSdkError('sdk_init_failed', 'localStorage is unavailable');
+    }
+    if (!storage) {
+      throw createSdkError('sdk_init_failed', 'localStorage is unavailable');
+    }
+    return storage;
+  }
+
+  function resolveFetch(fetchImpl: FetchLike | undefined) {
+    const resolved = fetchImpl ?? globalThis.fetch?.bind(globalThis);
+    if (!resolved) {
+      throw createSdkError('sdk_init_failed', 'fetch is unavailable');
+    }
+    return resolved;
+  }
+
+  function getStorageKey(baseUrl: string) {
+    return `${SDK_STORAGE_KEY}:${normalizeBaseUrl(baseUrl).toString()}`;
+  }
+
+  function normalizeBaseUrl(baseUrl: string) {
+    const url = new URL(baseUrl);
+    url.search = '';
+    url.hash = '';
+    url.pathname = url.pathname.endsWith('/')
+      ? url.pathname
+      : `${url.pathname}/`;
+    return url;
+  }
+
+  function readPersistedSdkState(storage: Storage, storageKey: string) {
+    const raw = storage.getItem(storageKey);
+    if (!raw) {
+      return null;
+    }
+    try {
+      const value = JSON.parse(raw);
+      if (!value || typeof value !== 'object') {
+        return null;
+      }
+      const valueRecord = value as Record<string, unknown>;
+      const sessionId = toNullableString(valueRecord.sessionId);
+      const accessToken = toNullableString(valueRecord.accessToken);
+      const refreshToken = toNullableString(valueRecord.refreshToken);
+      const receivedAt = toNullableString(valueRecord.receivedAt);
+      const expiresAt = toNullableString(valueRecord.expiresAt);
+      if (
+        sessionId === undefined ||
+        accessToken === undefined ||
+        refreshToken === undefined ||
+        receivedAt === undefined ||
+        expiresAt === undefined
+      ) {
+        return null;
+      }
+      if (refreshToken && !sessionId) {
+        return null;
+      }
+      return {
+        sessionId,
+        accessToken,
+        refreshToken,
+        receivedAt,
+        expiresAt,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function writePersistedSdkState(
+    storage: Storage,
+    storageKey: string,
+    snapshot: PersistedSdkState,
+  ) {
+    storage.setItem(storageKey, JSON.stringify(snapshot));
+  }
+
+  function clearPersistedSdkState(storage: Storage, storageKey: string) {
+    storage.removeItem(storageKey);
+  }
+
+  function createStateStore(
+    storage: Storage,
+    storageKey: string,
+  ): SessionStore {
+    const listeners = new Set<Listener>();
+    let state = hydrateState();
+
+    return {
+      getState() {
+        return cloneSnapshot(state);
+      },
+      onChange(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      setRecovering(next) {
+        updateState({
+          status: 'recovering',
+          authenticated: Boolean(next.accessToken),
+          ...clonePersisted(next),
+        });
+      },
+      setAuthenticated(next) {
+        updatePersisted({
+          status: 'authenticated',
+          authenticated: true,
+          ...clonePersisted(next),
+        });
+      },
+      setAuthenticatedLocal(next) {
+        updateState({
+          status: 'authenticated',
+          authenticated: true,
+          ...clonePersisted(next),
+        });
+      },
+      setAnonymous() {
+        clearPersistedSdkState(storage, storageKey);
+        updateState(createSnapshot('anonymous'));
+      },
+      applyPersistedState(next) {
+        updateState(hydrateSnapshot(next));
+      },
+      setAnonymousLocal() {
+        updateState(createSnapshot('anonymous'));
+      },
+    };
+
+    function hydrateState() {
+      return hydrateSnapshot(readPersistedSdkState(storage, storageKey));
+    }
+
+    function hydrateSnapshot(persisted: PersistedSdkState | null) {
+      if (!persisted?.refreshToken || !persisted.sessionId) {
+        return createSnapshot('anonymous');
+      }
+      return freezeSnapshot({
+        status: 'recovering',
+        authenticated: Boolean(persisted.accessToken),
+        ...persisted,
+      });
+    }
+
+    function updatePersisted(next: SessionSnapshot & PersistedSdkState) {
+      const persisted = clonePersisted(next);
+      writePersistedSdkState(storage, storageKey, persisted);
+      updateState({
+        status: next.status,
+        authenticated: next.authenticated,
+        ...persisted,
+      });
+    }
+
+    function updateState(next: SessionSnapshot) {
+      state = freezeSnapshot(next);
+      for (const listener of listeners) {
+        listener(cloneSnapshot(state));
+      }
+    }
+  }
+
+  // @ts-expect-error preserve extracted helper signature
+  function createHttpClient(input) {
+    return {
+      // @ts-expect-error preserve extracted helper signature
+      getJson(path, options = {}) {
+        return sendJson('GET', path, options);
+      },
+      // @ts-expect-error preserve extracted helper signature
+      postJson(path, body, options = {}) {
+        return sendJson('POST', path, { ...options, body });
+      },
+    };
+
+    async function sendJson(
+      method: string,
+      path: string,
+      options: RequestOptions,
+    ) {
+      const response = await input.fetch(
+        new URL(path.replace(/^\//, ''), input.baseUrl),
+        {
+          method,
+          headers: createHeaders(options),
+          ...(options.body === undefined
+            ? {}
+            : {
+                body: JSON.stringify(options.body),
+              }),
+        },
+      );
+      const payload = await readJson(response);
+      if (!response.ok) {
+        throw createRequestError(response.status, payload);
+      }
+      return payload;
+    }
+
+    function createHeaders(options: RequestOptions): Record<string, string> {
+      const headers: Record<string, string> = { accept: 'application/json' };
+      if (options.body !== undefined) {
+        headers['content-type'] = 'application/json';
+      }
+      if (options.accessToken) {
+        headers.authorization = `Bearer ${options.accessToken}`;
+      }
+      return headers;
+    }
+
+    async function readJson(response: Response) {
+      const text = await response.text();
+      if (!text) {
+        return null;
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  function shouldRefresh(now: number, expiresAt: number, receivedAt: number) {
+    const lifetimeMs = expiresAt - receivedAt;
+    const thresholdMs = refreshThresholdMs(lifetimeMs);
+    return now >= expiresAt - thresholdMs;
+  }
+
+  function refreshThresholdMs(lifetimeMs: number) {
+    return lifetimeMs < 10 * 60_000 ? lifetimeMs / 2 : 5 * 60_000;
+  }
+
+  function needsRefresh(snapshot: PersistedSdkState, now: number) {
+    if (!snapshot.expiresAt || !snapshot.receivedAt) {
+      return true;
+    }
+    const expiresAt = Date.parse(snapshot.expiresAt);
+    const receivedAt = Date.parse(snapshot.receivedAt);
+    if (!Number.isFinite(expiresAt) || !Number.isFinite(receivedAt)) {
+      return true;
+    }
+    return shouldRefresh(now, expiresAt, receivedAt);
+  }
+
+  function normalizeTokenResponse(payload: unknown, now: () => number) {
+    const value = payload as Record<string, unknown> | null;
+    if (!value || typeof value !== 'object') {
+      throw createSdkError('request_failed', 'Invalid session payload');
+    }
+    if (
+      typeof value.access_token !== 'string' ||
+      typeof value.session_id !== 'string' ||
+      typeof value.refresh_token !== 'string' ||
+      typeof value.expires_in !== 'number'
+    ) {
+      throw createSdkError('request_failed', 'Invalid session payload');
+    }
+    const receivedAtMs = now();
+    return {
+      sessionId: value.session_id,
+      accessToken: value.access_token,
+      refreshToken: value.refresh_token,
+      receivedAt: new Date(receivedAtMs).toISOString(),
+      expiresAt: new Date(receivedAtMs + value.expires_in * 1000).toISOString(),
+    };
+  }
+
+  // @ts-expect-error preserve extracted helper signature
+  function createSessionController(input) {
+    // @ts-expect-error preserve extracted helper local state
+    let refreshPromise = null;
+    let supersededRecoveryPromise: Promise<SessionResult | null> | null = null;
+    const controller = {
+      getState() {
+        return input.state.getState();
+      },
+      onChange(listener: Listener) {
+        return input.state.onChange(listener);
+      },
+      async acceptSessionResponse(
+        response: unknown,
+        options: { clearOnMeFailure?: 'auth-invalidating' } = {},
+      ) {
+        const session = normalizeTokenResponse(response, input.now);
+        input.state.setRecovering(session);
+        try {
+          input.state.setAuthenticated(session);
+          return session;
+        } catch (error) {
+          if (
+            options.clearOnMeFailure !== 'auth-invalidating' ||
+            isAuthInvalidatingError(error)
+          ) {
+            input.state.setAnonymous();
+          }
+          throw error;
+        }
+      },
+      async refresh() {
+        // @ts-expect-error preserve extracted helper local state
+        if (refreshPromise) {
+          return refreshPromise;
+        }
+        const snapshot = input.state.getState();
+        if (!snapshot.refreshToken) {
+          throw createSdkError('missing_session', 'Missing refresh token');
+        }
+        if (!snapshot.sessionId) {
+          throw createSdkError('missing_session', 'Missing session id');
+        }
+        const refreshCurrentSession = async () => {
+          const shared = input.readSharedState?.();
+          const adopted = newerUsableSharedSession(snapshot, shared);
+
+          if (adopted) {
+            input.state.setAuthenticated(adopted);
+            return adopted;
+          }
+
+          const current = shared ?? snapshot;
+
+          if (!current.refreshToken) {
+            throw createSdkError('missing_session', 'Missing refresh token');
+          }
+          if (!current.sessionId) {
+            throw createSdkError('missing_session', 'Missing session id');
+          }
+
+          input.state.setRecovering({
+            sessionId: current.sessionId,
+            accessToken: current.accessToken,
+            refreshToken: current.refreshToken,
+            receivedAt: current.receivedAt,
+            expiresAt: current.expiresAt,
+          });
+
+          try {
+            const response = await input.http.postJson('/session/refresh', {
+              session_id: current.sessionId,
+              refresh_token: current.refreshToken,
+            });
+
+            const currentState = input.state.getState();
+            const currentResult = sessionResultFromSnapshot(currentState);
+
+            if (!isSameSession(currentState, current)) {
+              if (currentResult) {
+                return currentResult;
+              }
+
+              throw createSdkError(
+                'request_failed',
+                'Session changed during refresh',
+              );
+            }
+
+            return await controller.acceptSessionResponse(response, {
+              clearOnMeFailure: 'auth-invalidating',
+            });
+          } catch (error) {
+            if (
+              !isSessionSupersededError(error) &&
+              isSameSession(input.state.getState(), current)
+            ) {
+              input.state.setAuthenticatedLocal(current);
+            }
+            throw error;
+          }
+        };
+
+        refreshPromise = (async () => {
+          try {
+            return await (input.withRefreshLock
+              ? input.withRefreshLock(refreshCurrentSession)
+              : refreshCurrentSession());
+          } catch (error) {
+            if (isSessionSupersededError(error)) {
+              const recoveryPromise = startSupersededRecovery(snapshot);
+              const trackedRecoveryPromise = recoveryPromise.finally(() => {
+                if (supersededRecoveryPromise === trackedRecoveryPromise) {
+                  supersededRecoveryPromise = null;
+                }
+              });
+              supersededRecoveryPromise = trackedRecoveryPromise;
+              void supersededRecoveryPromise.catch(() => {});
+            } else if (
+              isAuthInvalidatingError(error) ||
+              isContractDriftError(error)
+            ) {
+              if (isSameSession(input.state.getState(), snapshot)) {
+                input.state.setAnonymous();
+              }
+            }
+            throw error;
+          } finally {
+            refreshPromise = null;
+          }
+        })();
+        return refreshPromise;
+      },
+      async recover() {
+        const snapshot = input.state.getState();
+        if (!snapshot.refreshToken) {
+          input.state.setAnonymous();
+          return;
+        }
+        try {
+          if (!snapshot.accessToken || needsRefresh(snapshot, input.now())) {
+            await controller.refresh();
+            return;
+          }
+          input.state.setAuthenticated({
+            sessionId: snapshot.sessionId,
+            accessToken: snapshot.accessToken,
+            refreshToken: snapshot.refreshToken,
+            receivedAt:
+              snapshot.receivedAt ?? new Date(input.now()).toISOString(),
+            expiresAt:
+              snapshot.expiresAt ?? new Date(input.now()).toISOString(),
+          });
+        } catch (error) {
+          if (isSessionSupersededError(error)) {
+            await supersededRecoveryPromise;
+            return;
+          }
+
+          if (isAuthInvalidatingError(error) || isContractDriftError(error)) {
+            if (isSameSession(input.state.getState(), snapshot)) {
+              input.state.setAnonymous();
+            }
+
+            if (isContractDriftError(error)) {
+              throw error;
+            }
+          }
+        }
+      },
+      async logout() {
+        const snapshot = input.state.getState();
+        if (!snapshot.refreshToken && !snapshot.accessToken) {
+          input.state.setAnonymous();
+          return;
+        }
+        try {
+          let accessToken = snapshot.accessToken;
+          if (
+            snapshot.refreshToken &&
+            (!accessToken || needsRefresh(snapshot, input.now()))
+          ) {
+            try {
+              accessToken = (await controller.refresh()).accessToken;
+            } catch {
+              accessToken = null;
+            }
+          }
+          if (accessToken) {
+            await input.http.postJson('/session/logout', undefined, {
+              accessToken,
+            });
+          }
+        } catch {
+          // Deterministic local clear hides remote logout failures.
+        } finally {
+          input.state.setAnonymous();
+        }
+      },
+    };
+
+    return controller;
+
+    async function startSupersededRecovery(snapshot: SessionSnapshot) {
+      const beforeRecovery = input.state.getState();
+
+      if (!isSameSession(beforeRecovery, snapshot)) {
+        return sessionResultFromSnapshot(beforeRecovery);
+      }
+
+      input.state.setRecovering({
+        sessionId: snapshot.sessionId,
+        accessToken: snapshot.accessToken,
+        refreshToken: snapshot.refreshToken ?? '',
+        receivedAt: snapshot.receivedAt ?? new Date(input.now()).toISOString(),
+        expiresAt: snapshot.expiresAt ?? new Date(input.now()).toISOString(),
+      });
+
+      const timeoutMs = input.recoveryTimeoutMs ?? 50;
+      const deadline = Date.now() + timeoutMs;
+
+      while (true) {
+        const current = input.state.getState();
+
+        if (!isSameRecoveringSession(current, snapshot)) {
+          return sessionResultFromSnapshot(current);
+        }
+
+        const adoption = adoptRecoveredSharedState(snapshot);
+
+        if (adoption) {
+          return adoption;
+        }
+
+        const remainingMs = deadline - Date.now();
+
+        if (remainingMs <= 0) {
+          break;
+        }
+
+        await waitForExternalStorage(remainingMs);
+      }
+
+      const current = input.state.getState();
+
+      if (!isSameRecoveringSession(current, snapshot)) {
+        return sessionResultFromSnapshot(current);
+      }
+
+      if (hasLiveAccessToken(current, input.now())) {
+        input.state.setAuthenticatedLocal(current);
+        return null;
+      }
+
+      if (hasSharedSessionChanged(snapshot, current)) {
+        return null;
+      }
+
+      input.state.setAnonymousLocal();
+      return null;
+    }
+
+    function newerUsableSharedSession(
+      snapshot: SessionSnapshot,
+      shared: PersistedSdkState | null | undefined,
+    ) {
+      if (
+        !shared?.sessionId ||
+        !shared.refreshToken ||
+        !shared.accessToken ||
+        !hasSharedSessionChanged(snapshot, shared) ||
+        needsRefresh(shared, input.now())
+      ) {
+        return null;
+      }
+
+      return {
+        sessionId: shared.sessionId,
+        accessToken: shared.accessToken,
+        refreshToken: shared.refreshToken,
+        receivedAt: shared.receivedAt ?? new Date(input.now()).toISOString(),
+        expiresAt: shared.expiresAt ?? new Date(input.now()).toISOString(),
+      };
+    }
+
+    function adoptRecoveredSharedState(snapshot: SessionSnapshot) {
+      const shared = input.readSharedState?.();
+
+      if (!shared?.sessionId || !shared.refreshToken) {
+        return null;
+      }
+
+      if (!hasSharedSessionChanged(snapshot, shared)) {
+        return null;
+      }
+
+      const adopted = newerUsableSharedSession(snapshot, shared);
+
+      if (adopted) {
+        input.state.setAuthenticated(adopted);
+        return adopted;
+      }
+
+      input.state.applyPersistedState(shared);
+      return null;
+    }
+
+    async function waitForExternalStorage(timeoutMs: number) {
+      if (input.waitForExternalStorage) {
+        await input.waitForExternalStorage(timeoutMs);
+        return;
+      }
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, timeoutMs);
+      });
+    }
+  }
+
+  function createEmailModule(input: {
+    http: {
+      getJson(
+        path: string,
+        options?: Omit<RequestOptions, 'body'>,
+      ): Promise<unknown>;
+      postJson(
+        path: string,
+        body: unknown,
+        options?: Omit<RequestOptions, 'body'>,
+      ): Promise<unknown>;
+    };
+    session: {
+      acceptSessionResponse(
+        response: unknown,
+        options?: { clearOnMeFailure?: 'auth-invalidating' },
+      ): Promise<ReturnType<typeof normalizeTokenResponse>>;
+    };
+  }) {
+    return {
+      start(payload: Parameters<AuthMiniInternal['email']['start']>[0]) {
+        return input.http.postJson('/email/start', payload) as ReturnType<
+          AuthMiniInternal['email']['start']
+        >;
+      },
+      async verify(
+        payload: Parameters<AuthMiniInternal['email']['verify']>[0],
+      ) {
+        const response = await input.http.postJson('/email/verify', payload);
+        return await input.session.acceptSessionResponse(response);
+      },
+    };
+  }
+
+  function createWebauthnModule(input: {
+    http: {
+      getJson(
+        path: string,
+        options?: Omit<RequestOptions, 'body'>,
+      ): Promise<unknown>;
+      postJson(
+        path: string,
+        body: unknown,
+        options?: Omit<RequestOptions, 'body'>,
+      ): Promise<unknown>;
+    };
+    navigatorCredentials?: NavigatorCredentialsLike;
+    now: () => number;
+    publicKeyCredential?: unknown;
+    session: {
+      acceptSessionResponse(
+        response: unknown,
+        options?: { clearOnMeFailure?: 'auth-invalidating' },
+      ): Promise<ReturnType<typeof normalizeTokenResponse>>;
+      refresh(): Promise<ReturnType<typeof normalizeTokenResponse>>;
+    };
+    state: SessionStore;
+  }) {
+    return {
+      async authenticate(target = {}) {
+        ensureWebauthnSupport('authenticate');
+        const options = (await input.http.postJson(
+          '/webauthn/authenticate/options',
+          {},
+        )) as AuthenticationOptionsResponse;
+        const credential = await requestCredential(
+          'authenticate',
+          input.navigatorCredentials,
+          'get',
+          {
+            publicKey: decodeAuthenticationOptions(
+              options.publicKey,
+            ) as PublicKeyCredentialRequestOptions,
+          },
+        );
+        const response = await input.http.postJson(
+          '/webauthn/authenticate/verify',
+          {
+            request_id: options.request_id,
+            credential: serializeCredential(credential),
+            ...target,
+          },
+        );
+        return await input.session.acceptSessionResponse(response);
+      },
+      async register() {
+        ensureWebauthnSupport('register');
+        const optionsAccessToken = await requireAccessToken();
+        const options = (await input.http.postJson(
+          '/webauthn/register/options',
+          {},
+          { accessToken: optionsAccessToken },
+        )) as RegistrationOptionsResponse;
+        const credential = await requestCredential(
+          'register',
+          input.navigatorCredentials,
+          'create',
+          {
+            publicKey: decodeRegistrationOptions(
+              options.publicKey,
+            ) as unknown as PublicKeyCredentialCreationOptions,
+          },
+        );
+        const verifyAccessToken = await requireAccessToken();
+        return (await input.http.postJson(
+          '/webauthn/register/verify',
+          {
+            request_id: options.request_id,
+            credential: serializeCredential(credential),
+          },
+          { accessToken: verifyAccessToken },
+        )) as ReturnType<AuthMiniInternal['passkey']['register']>;
+      },
+    };
+
+    function ensureWebauthnSupport(mode: 'authenticate' | 'register') {
+      const hasMethod =
+        mode === 'register'
+          ? typeof input.navigatorCredentials?.create === 'function'
+          : typeof input.navigatorCredentials?.get === 'function';
+      if (!input.publicKeyCredential || !hasMethod) {
+        throw createSdkError(
+          'webauthn_unsupported',
+          'WebAuthn is unavailable in this browser',
+        );
+      }
+    }
+
+    async function requestCredential<T extends CredentialOptions>(
+      mode: 'authenticate' | 'register',
+      credentials: NavigatorCredentialsLike | undefined,
+      method: 'create' | 'get',
+      options: T,
+    ): Promise<WebauthnPublicKeyCredential> {
+      const invoke = credentials?.[method];
+      if (!credentials || !invoke) {
+        throw createSdkError(
+          'webauthn_unsupported',
+          'WebAuthn is unavailable in this browser',
+        );
+      }
+      try {
+        const credential =
+          method === 'create'
+            ? await credentials.create!(options as CredentialCreationOptions)
+            : await credentials.get!(options as CredentialRequestOptions);
+        if (!credential) {
+          throw createSdkError(
+            'webauthn_cancelled',
+            mode === 'register'
+              ? 'Passkey registration cancelled'
+              : 'Passkey authentication cancelled',
+          );
+        }
+        return credential as WebauthnPublicKeyCredential;
+      } catch (error) {
+        if (isWebauthnCancelledError(error)) {
+          throw createSdkError(
+            'webauthn_cancelled',
+            mode === 'register'
+              ? 'Passkey registration cancelled'
+              : 'Passkey authentication cancelled',
+          );
+        }
+        throw error;
+      }
+    }
+
+    async function requireAccessToken() {
+      const snapshot = input.state.getState();
+      if (!snapshot.refreshToken && !snapshot.accessToken) {
+        throw createSdkError(
+          'missing_session',
+          'Missing authenticated session',
+        );
+      }
+      if (!snapshot.accessToken || needsRefresh(snapshot, input.now())) {
+        return (await input.session.refresh()).accessToken;
+      }
+      return snapshot.accessToken;
+    }
+  }
+
+  function createAuthMiniInternal(input: InternalRuntimeDeps) {
+    const storageKey = input.storageKey ?? SDK_STORAGE_KEY;
+    const state = createStateStore(input.storage, storageKey);
+    const externalStorageListeners = new Set<() => void>();
+    const http = createHttpClient({
+      baseUrl: input.baseUrl,
+      fetch: input.fetch,
+    });
+    const adoptExternalState = (next: PersistedSdkState | null) => {
+      if (
+        next?.sessionId &&
+        next.refreshToken &&
+        next.accessToken &&
+        !needsRefresh(next, (input.now ?? (() => Date.now()))())
+      ) {
+        state.setAuthenticated({
+          sessionId: next.sessionId,
+          accessToken: next.accessToken,
+          refreshToken: next.refreshToken,
+          receivedAt:
+            next.receivedAt ??
+            new Date((input.now ?? (() => Date.now()))()).toISOString(),
+          expiresAt:
+            next.expiresAt ??
+            new Date((input.now ?? (() => Date.now()))()).toISOString(),
+        });
+      } else {
+        state.applyPersistedState(next);
+      }
+      for (const listener of externalStorageListeners) {
+        listener();
+      }
+    };
+
+    input.storageSync?.subscribe(adoptExternalState);
+
+    const session = createSessionController({
+      http,
+      now: input.now ?? (() => Date.now()),
+      readSharedState: () =>
+        input.storageSync?.getSnapshot?.() ??
+        readPersistedSdkState(input.storage, storageKey),
+      recoveryTimeoutMs: input.recoveryTimeoutMs,
+      state,
+      withRefreshLock: input.withRefreshLock,
+      // @ts-expect-error preserve extracted helper signature
+      waitForExternalStorage(timeoutMs) {
+        return new Promise<void>((resolve) => {
+          let settled = false;
+          const done = () => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            externalStorageListeners.delete(done);
+            resolve();
+          };
+          const timer = setTimeout(done, timeoutMs);
+          externalStorageListeners.add(done);
+        });
+      },
+    });
+    const now = input.now ?? (() => Date.now());
+    const passkey = createWebauthnModule({
+      http,
+      navigatorCredentials: input.navigatorCredentials,
+      now,
+      publicKeyCredential: input.publicKeyCredential,
+      session,
+      state,
+    });
+    const api = {
+      email: createEmailModule({ http, session }),
+      session: {
+        getState() {
+          return state.getState();
+        },
+        onChange(listener: Listener) {
+          return state.onChange(listener);
+        },
+        acceptRedirectCallback(input: RedirectSessionInput) {
+          return session.acceptSessionResponse(input);
+        },
+        refresh() {
+          return session.refresh();
+        },
+        logout() {
+          return session.logout();
+        },
+        clearLocal() {
+          state.setAnonymous();
+        },
+      },
+      passkey,
+      webauthn: passkey,
+    };
+    const ready =
+      input.autoRecover !== false && state.getState().status === 'recovering'
+        ? Promise.resolve().then(() => session.recover())
+        : Promise.resolve();
+
+    void ready.catch(() => {});
+
+    return Object.assign(api, { ready });
+  }
+
+  function createBrowserSdkInternal(
+    input: BrowserSdkFactoryOptions & {
+      baseUrl: string;
+      recoveryTimeoutMs?: number;
+    },
+  ) {
+    const browser = typeof window === 'undefined' ? globalThis : window;
+    const baseUrl = input.baseUrl;
+
+    if (!baseUrl) {
+      throw createSdkError('sdk_init_failed', 'Cannot determine SDK base URL');
+    }
+
+    const normalizedBaseUrl = normalizeBaseUrl(baseUrl).toString();
+    const storageKey = getStorageKey(normalizedBaseUrl);
+
+    const storage = resolveSdkStorage({
+      storage: input.storage,
+      getDefaultStorage: () => browser.localStorage,
+    });
+
+    const lockManager: BrowserLockManager | undefined =
+      input.lockManager ??
+      (browser.navigator?.locks as BrowserLockManager | undefined);
+    const withRefreshLock = lockManager
+      ? <T>(operation: () => Promise<T>) =>
+          lockManager.request(
+            `${storageKey}:refresh`,
+            { mode: 'exclusive' },
+            operation,
+          )
+      : undefined;
+    const sdk = createAuthMiniInternal({
+      baseUrl: normalizedBaseUrl,
+      fetch: resolveFetch(input.fetch),
+      navigatorCredentials: browser.navigator?.credentials,
+      now: input.now,
+      publicKeyCredential: browser.PublicKeyCredential,
+      recoveryTimeoutMs: input.recoveryTimeoutMs,
+      storage,
+      storageKey,
+      storageSync: createBrowserStorageSync(browser, storage, storageKey),
+      withRefreshLock,
+    });
+
+    let coordinators = browserRefreshCoordinators.get(storage);
+    if (!coordinators) {
+      coordinators = new Map();
+      browserRefreshCoordinators.set(storage, coordinators);
+    }
+    let coordinator = coordinators.get(storageKey);
+    if (!coordinator) {
+      coordinator = createBrowserRefreshCoordinator();
+      coordinators.set(storageKey, coordinator);
+    }
+    coordinator.register(sdk);
+
+    return sdk;
+  }
+
+  function createBrowserRefreshCoordinator() {
+    let activeSdk: AuthMiniInternal | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    return {
+      register(sdk: AuthMiniInternal) {
+        sdk.session.onChange((snapshot) => {
+          if (snapshot.status === 'authenticated') {
+            activeSdk = sdk;
+            schedule(snapshot);
+            return;
+          }
+          if (snapshot.status === 'anonymous') {
+            activeSdk = null;
+            clearSchedule();
+          }
+        });
+      },
+    };
+
+    function clearSchedule() {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+
+    function schedule(snapshot: SessionSnapshot, delayMs?: number) {
+      clearSchedule();
+      if (
+        !snapshot.sessionId ||
+        !snapshot.refreshToken ||
+        !snapshot.expiresAt
+      ) {
+        return;
+      }
+      const expiresAt = Date.parse(snapshot.expiresAt);
+      if (!Number.isFinite(expiresAt)) {
+        return;
+      }
+      const receivedAt = Date.parse(snapshot.receivedAt ?? '');
+      const lifetimeMs = expiresAt - receivedAt;
+      const refreshLeewayMs = Number.isFinite(lifetimeMs)
+        ? refreshThresholdMs(lifetimeMs)
+        : BACKGROUND_REFRESH_LEEWAY_MS;
+      const delay =
+        delayMs ?? Math.max(0, expiresAt - Date.now() - refreshLeewayMs);
+      timer = setTimeout(refreshInBackground, Math.min(delay, MAX_TIMEOUT_MS));
+    }
+
+    function refreshInBackground() {
+      timer = null;
+      const sdk = activeSdk;
+      if (!sdk) {
+        return;
+      }
+      const snapshot = sdk.session.getState();
+      if (snapshot.status !== 'authenticated') {
+        return;
+      }
+      void sdk.session.refresh().catch(() => {
+        const current = sdk.session.getState();
+        if (current.status === 'authenticated') {
+          schedule(current, BACKGROUND_REFRESH_RETRY_MS);
+        }
+      });
+    }
+  }
+
+  function createBrowserStorageSync(
+    browser: typeof globalThis,
+    storage: Storage,
+    storageKey: string,
+  ): StorageSync | null {
+    if (typeof browser?.addEventListener !== 'function') {
+      return null;
+    }
+
+    return {
+      getSnapshot() {
+        return readPersistedSdkState(storage, storageKey);
+      },
+      subscribe(listener) {
+        const handleStorage = (event: StorageEvent) => {
+          if (event.key !== storageKey || event.storageArea !== storage) {
+            return;
+          }
+
+          listener(readPersistedSdkState(storage, storageKey));
+        };
+
+        browser.addEventListener('storage', handleStorage);
+        return () => {
+          browser.removeEventListener('storage', handleStorage);
+        };
+      },
+    };
+  }
+
+  function toNullableString(value: unknown) {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  function decodeRegistrationOptions(publicKey: RegistrationPublicKey) {
+    return {
+      ...publicKey,
+      challenge: decodeBase64Url(publicKey.challenge),
+      user: {
+        ...publicKey.user,
+        id: decodeBase64Url(publicKey.user.id),
+      },
+      excludeCredentials: Array.isArray(publicKey.excludeCredentials)
+        ? publicKey.excludeCredentials.map((item) => ({
+            ...item,
+            id: decodeBase64Url(item.id),
+          }))
+        : undefined,
+    };
+  }
+
+  function decodeAuthenticationOptions(publicKey: AuthenticationPublicKey) {
+    return {
+      ...publicKey,
+      challenge: decodeBase64Url(publicKey.challenge),
+      allowCredentials: Array.isArray(publicKey.allowCredentials)
+        ? publicKey.allowCredentials.map((item) => ({
+            ...item,
+            id: decodeBase64Url(item.id),
+          }))
+        : undefined,
+    };
+  }
+
+  function serializeCredential(credential: WebauthnPublicKeyCredential) {
+    const response = credential.response;
+    const serialized: {
+      id: string;
+      rawId: string;
+      type: string;
+      response: Record<string, unknown>;
+      clientExtensionResults?: unknown;
+    } = {
+      id: credential.id,
+      rawId: encodeBase64Url(credential.rawId),
+      type: credential.type,
+      response: {
+        clientDataJSON: encodeBase64Url(response.clientDataJSON),
+      },
+    };
+
+    if (typeof credential.getClientExtensionResults === 'function') {
+      serialized.clientExtensionResults =
+        credential.getClientExtensionResults();
+    } else if (credential.clientExtensionResults) {
+      serialized.clientExtensionResults = credential.clientExtensionResults;
+    }
+
+    if (typeof response.getTransports === 'function') {
+      serialized.response.transports = response.getTransports();
+    }
+    if ('attestationObject' in response && response.attestationObject) {
+      serialized.response.attestationObject = encodeBase64Url(
+        response.attestationObject,
+      );
+    }
+    if ('authenticatorData' in response && response.authenticatorData) {
+      serialized.response.authenticatorData = encodeBase64Url(
+        response.authenticatorData,
+      );
+    }
+    if ('signature' in response && response.signature) {
+      serialized.response.signature = encodeBase64Url(response.signature);
+    }
+    if ('userHandle' in response && response.userHandle) {
+      serialized.response.userHandle = encodeBase64Url(response.userHandle);
+    }
+    return serialized;
+  }
+
+  function isWebauthnCancelledError(error: unknown) {
+    const value = error as { code?: unknown; name?: unknown } | null;
+    return (
+      value?.code === 'webauthn_cancelled' ||
+      value?.name === 'AbortError' ||
+      value?.name === 'NotAllowedError'
+    );
+  }
+
+  function isAuthInvalidatingError(error: unknown) {
+    const value = error as { error?: unknown; status?: unknown } | null;
+    return (
+      value?.error === 'invalid_refresh_token' ||
+      value?.error === 'session_invalidated' ||
+      (value?.status === 401 && value?.error !== 'session_superseded')
+    );
+  }
+
+  function isContractDriftError(error: unknown) {
+    const value = error as { code?: unknown; message?: unknown } | null;
+    return (
+      value?.code === 'request_failed' &&
+      value?.message === 'request_failed: Invalid session payload'
+    );
+  }
+
+  function isSessionSupersededError(error: unknown) {
+    const value = error as { error?: unknown } | null;
+    return value?.error === 'session_superseded';
+  }
+
+  function hasSharedSessionChanged(
+    snapshot: PersistedSdkState,
+    shared: PersistedSdkState,
+  ) {
+    return (
+      snapshot.sessionId !== shared.sessionId ||
+      snapshot.accessToken !== shared.accessToken ||
+      snapshot.refreshToken !== shared.refreshToken ||
+      snapshot.receivedAt !== shared.receivedAt ||
+      snapshot.expiresAt !== shared.expiresAt
+    );
+  }
+
+  function isSameRecoveringSession(
+    current: SessionSnapshot,
+    snapshot: PersistedSdkState,
+  ) {
+    return (
+      current.status === 'recovering' &&
+      current.sessionId === snapshot.sessionId
+    );
+  }
+
+  function isSameSession(
+    current: SessionSnapshot,
+    expected: SessionSnapshot | PersistedSdkState,
+  ) {
+    return (
+      current.sessionId === expected.sessionId &&
+      current.accessToken === expected.accessToken &&
+      current.refreshToken === expected.refreshToken &&
+      current.receivedAt === expected.receivedAt &&
+      current.expiresAt === expected.expiresAt
+    );
+  }
+
+  function sessionResultFromSnapshot(snapshot: SessionSnapshot) {
+    if (
+      snapshot.status !== 'authenticated' ||
+      !snapshot.authenticated ||
+      !snapshot.sessionId ||
+      !snapshot.refreshToken ||
+      !snapshot.accessToken ||
+      !snapshot.receivedAt ||
+      !snapshot.expiresAt
+    ) {
+      return null;
+    }
+
+    return {
+      sessionId: snapshot.sessionId,
+      accessToken: snapshot.accessToken,
+      refreshToken: snapshot.refreshToken,
+      receivedAt: snapshot.receivedAt,
+      expiresAt: snapshot.expiresAt,
+    };
+  }
+
+  function hasLiveAccessToken(snapshot: SessionSnapshot, now: number) {
+    if (!snapshot.accessToken || !snapshot.expiresAt) {
+      return false;
+    }
+
+    const expiresAt = Date.parse(snapshot.expiresAt);
+    return Number.isFinite(expiresAt) && now < expiresAt;
+  }
+
+  function decodeBase64Url(value: string) {
+    const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+    const buffer =
+      typeof Buffer !== 'undefined'
+        ? Buffer.from(padded, 'base64')
+        : Uint8Array.from(globalThis.atob(padded), (char) =>
+            char.charCodeAt(0),
+          );
+    return new Uint8Array(buffer);
+  }
+
+  function encodeBase64Url(value: ArrayBuffer | ArrayBufferView) {
+    const bytes =
+      value instanceof Uint8Array
+        ? value
+        : value instanceof ArrayBuffer
+          ? new Uint8Array(value)
+          : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    const base64 =
+      typeof Buffer !== 'undefined'
+        ? Buffer.from(bytes).toString('base64')
+        : globalThis.btoa(String.fromCharCode(...bytes));
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  function createSnapshot(status: SessionSnapshot['status']): SessionSnapshot {
+    return freezeSnapshot({
+      status,
+      authenticated: status === 'authenticated',
+      sessionId: null,
+      accessToken: null,
+      refreshToken: null,
+      receivedAt: null,
+      expiresAt: null,
+    });
+  }
+
+  function clonePersisted(snapshot: PersistedSdkState): PersistedSdkState {
+    return {
+      sessionId: snapshot.sessionId,
+      accessToken: snapshot.accessToken,
+      refreshToken: snapshot.refreshToken,
+      receivedAt: snapshot.receivedAt,
+      expiresAt: snapshot.expiresAt,
+    };
+  }
+
+  function freezeSnapshot<T extends SessionSnapshot>(snapshot: T): T {
+    return Object.freeze(snapshot);
+  }
+
+  function cloneSnapshot(snapshot: SessionSnapshot): SessionSnapshot {
+    return freezeSnapshot({
+      status: snapshot.status,
+      authenticated: snapshot.authenticated,
+      ...clonePersisted(snapshot),
+    });
+  }
+
+  return {
+    createAuthMiniInternal,
+    createBrowserSdkInternal,
+  };
+}
