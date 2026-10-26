@@ -1,3 +1,4 @@
+import { D1AdminStore } from './d1-admin';
 import { D1SigningKeyStore } from './d1-store';
 import {
   D1AppMetaStore,
@@ -14,6 +15,8 @@ import { buildMimeMessage } from './mail/message';
 import { sendSmtpMail, workerSocketFactory } from './mail/smtp';
 import type { EmailDeps } from './routes/email';
 import { handleEmailStart, handleEmailVerify } from './routes/email';
+import type { AdminDeps } from './routes/admin';
+import { handleAdminConfig, handleAdminSetup } from './routes/admin';
 import type { SessionDeps } from './routes/session';
 import { handleMe, handleSessionLogout, handleSessionRefresh, handleTime } from './routes/session';
 import { handleJwks } from './routes/jwks';
@@ -60,6 +63,14 @@ async function sessionDeps(_request: Request, env: Env): Promise<SessionDeps> {
   };
 }
 
+async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
+  return {
+    ...(await sessionDeps(request, env)),
+    adminStore: new D1AdminStore(env.DB),
+    setupToken: env.ADMIN_SETUP_TOKEN ?? null,
+  };
+}
+
 /**
  * Route table keyed by "METHOD /path". The legacy server dispatches on the same pair, so this
  * table stays the single place where contract coverage is visible.
@@ -72,6 +83,10 @@ const routes = new Map<string, Handler>([
   ['POST /session/logout', async (request, env) => handleSessionLogout(request, await sessionDeps(request, env))],
   ['GET /me', async (request, env) => handleMe(request, await sessionDeps(request, env))],
   ['GET /time', async () => handleTime(new Date())],
+  ['GET /admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))],
+  ['PUT /admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))],
+  ['GET /admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))],
+  ['PUT /admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))],
 ]);
 
 export function routeKeys(): string[] {

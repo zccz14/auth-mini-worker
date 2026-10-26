@@ -197,6 +197,28 @@ Smoke-tested against the real D1 on 2026-10-26 (throwaway deployment, deleted af
 `POST /session/refresh` with an unknown session `401 session_invalidated`,
 `POST /session/logout` without a token `401 invalid_access_token`.
 
+## Admin bootstrap
+
+`PUT /admin/setup` installs the first admin Ed25519 key and the user row that owns it; a second
+call answers `409 already_initialized`, and `GET /admin/setup` answers `403` once an admin exists.
+
+**Divergence:** the legacy server gated setup on the caller being on loopback. A Worker has no
+loopback, so the gate here is "no admin exists yet" plus an optional `ADMIN_SETUP_TOKEN` header
+check. Set that variable in production: without it, the window between deploy and the owner
+claiming admin is open to anyone who reaches the URL.
+
+`PUT /admin/config` requires an admin token and enforces the legacy rules: issuer must be
+`scheme://host[:port]/` with no credentials, query, fragment or path; `rp_id` must be a plain DNS
+name and must equal or be a parent domain of the issuer host (never an IP, never `localhost`
+unless the issuer is localhost); the SMTP array replaces the table wholesale, an existing id with
+an empty password keeps the stored secret, and a new row without a password is rejected. The
+response never contains a password — the wire shape is `AdminSmtpConfigSummary`, snake_case.
+
+A bug this caught: the strict JSON decoder treated every string as a potential key, so a body
+that reused one string as two different values (`username` and `from_email` both `auth@ntnl.io`)
+was rejected as `duplicate_field`. It now tracks object context and only counts strings in key
+position, with a regression test.
+
 ## Cutover shape
 
 Freeze writes on the legacy server → export SQLite → import into D1 with the transforms above →

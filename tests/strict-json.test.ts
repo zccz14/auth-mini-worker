@@ -19,6 +19,14 @@ describe('strict JSON decoding', () => {
     expect(() => parseStrictJsonObject('{"a":1} trailing')).toThrow();
   });
 
+  it('does not confuse repeated string values with duplicate keys', () => {
+    expect(() =>
+      parseStrictJsonObject('{"username":"auth@ntnl.io","from_email":"auth@ntnl.io"}'),
+    ).not.toThrow();
+    expect(() => parseStrictJsonObject('{"a":["x","x",{"b":"x"}],"c":"x"}')).not.toThrow();
+    expect(() => parseStrictJsonObject('{"a":1,"a":2}')).toThrow('duplicate_field');
+  });
+
   it('mirrors serde deny_unknown_fields', () => {
     const body = parseStrictJsonObject('{"request_id":"x","extra":true}');
     expect(() => rejectUnknownKeys(body, ['request_id'])).toThrow('unknown_field');
