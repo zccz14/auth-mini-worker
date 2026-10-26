@@ -1,0 +1,143 @@
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE,
+  email_verified_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+  id TEXT PRIMARY KEY CHECK (id = 'APP'),
+  issuer TEXT NOT NULL,
+  rp_id TEXT NOT NULL DEFAULT 'localhost',
+  brand_name TEXT NOT NULL DEFAULT 'auth-mini',
+  brand_background_image TEXT NOT NULL DEFAULT '',
+  admin_user_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (admin_user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS email_otps (
+  email TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS email_change_otps (
+  user_id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  refresh_token_hash TEXT NOT NULL,
+  auth_method TEXT NOT NULL CHECK (auth_method IN ('email_otp', 'webauthn', 'ed25519', 'agent_approval', 'sso')),
+  source_auth_method TEXT,
+  audience TEXT NOT NULL DEFAULT '',
+  ip TEXT,
+  user_agent TEXT,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS remote_login_requests (
+  id TEXT PRIMARY KEY,
+  exchange_code_hash TEXT NOT NULL,
+  confirmation_code_hash TEXT NOT NULL,
+  redirect_uri TEXT,
+  audience TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'consumed', 'expired')),
+  approved_user_id TEXT,
+  expires_at TEXT NOT NULL,
+  approved_at TEXT,
+  denied_at TEXT,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (approved_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS jwks_keys (
+  id TEXT PRIMARY KEY CHECK (id IN ('CURRENT', 'STANDBY')),
+  kid TEXT NOT NULL UNIQUE,
+  alg TEXT NOT NULL,
+  public_jwk TEXT NOT NULL,
+  private_jwk TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS smtp_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL,
+  username TEXT NOT NULL,
+  password TEXT NOT NULL,
+  from_email TEXT NOT NULL,
+  from_name TEXT NOT NULL DEFAULT '',
+  secure INTEGER NOT NULL DEFAULT 0 CHECK (secure IN (0, 1)),
+  is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+  weight INTEGER NOT NULL DEFAULT 1 CHECK (weight > 0)
+);
+
+CREATE TABLE IF NOT EXISTS webauthn_credentials (
+  credential_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  passkey_json TEXT NOT NULL,
+  rp_id TEXT NOT NULL,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS webauthn_challenges (
+  request_id TEXT PRIMARY KEY,
+  type TEXT NOT NULL CHECK (type IN ('register', 'authenticate')),
+  state_json TEXT NOT NULL,
+  user_id TEXT,
+  expires_at TEXT NOT NULL,
+  rp_id TEXT NOT NULL,
+  rp_name TEXT NOT NULL DEFAULT 'auth-mini',
+  origin TEXT NOT NULL,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK (
+    (type = 'register' AND user_id IS NOT NULL) OR
+    (type = 'authenticate' AND user_id IS NULL)
+  ),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS ed25519_credentials (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  public_key TEXT NOT NULL UNIQUE,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS ed25519_challenges (
+  request_id TEXT PRIMARY KEY,
+  credential_id TEXT NOT NULL,
+  challenge TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (credential_id) REFERENCES ed25519_credentials(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_directory_token (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
