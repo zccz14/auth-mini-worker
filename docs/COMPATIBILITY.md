@@ -125,9 +125,20 @@ would have refused cannot slip in here.
 
 `format`/`version` are the guard: a legacy row that has not been through the exporter fails
 `parsePasskey` and answers `400 invalid_webauthn_authentication`, instead of being misread as a
-credential of ours. `tools/webauthn-export` (Rust, runs `webauthn-rs` natively) rewrites legacy rows
-into exactly this shape at cutover — it emits `user_handle` straight from the credential's
-`user_unique_id`, so the handle never has to be re-derived from a user id.
+credential of ours.
+
+`tools/webauthn-export` produces that document. It links `webauthn-rs` 0.5.5 — the crate and version
+the legacy server runs — so each row is read by the code that wrote it, and rebuilds the COSE key in
+wire form because that is what `@simplewebauthn/server` decodes on every sign-in. The credential does
+not store the user handle (webauthn-rs keeps it only in the in-flight registration state), so the
+exporter derives it from the user id with the legacy `user_webauthn_id` function; `cargo test` there
+pins the same vector as `tests/webauthn.test.ts`, and the two implementations agree byte for byte.
+
+Dry run against the production database (2026-10-26, read-only): **20 credentials for 13 users, 20
+exported, 0 failures**, all ES256, all `transports: null`. Every exported public key was then parsed
+by `@simplewebauthn/server`'s `decodeCredentialPublicKey` and decoded as EC2 / P-256 / ES256. What
+that cannot prove — that a signature verifies, and that a device's stored handle matches the derived
+one — is the cutover checklist's "one real device passkey sign-in", and a mismatch fails closed.
 
 ### Who may manage passkeys
 
@@ -175,7 +186,7 @@ in the spec; the unimplemented remainder is the roadmap in the README.
 | `app_meta` | issuer, rp_id, brand_*, admin_user_id | copy as-is |
 | `jwks_keys` | **private** material for CURRENT and STANDBY | copy as-is — without this every issued token dies at cutover |
 | `sessions` | live rows with `expires_at > now` | copy as-is, or accept a forced re-login (decide at cutover) |
-| `webauthn_credentials` | `passkey_json` | one-shot exporter (`tools/webauthn-export`) runs `webauthn-rs` natively and emits the neutral document above — cred id, COSE key, counter, transports, user handle, rp_id; its serde shape is never hand-parsed |
+| `webauthn_credentials` | `passkey_json` | `tools/webauthn-export` reads each row with `webauthn-rs` 0.5.5 and emits the neutral document above; see the WebAuthn section for the 20-row production dry run |
 | `ed25519_credentials` | public keys | copy as-is |
 | `user_directory_token` | token hash | copy as-is — Linkit reads the user-id directory through it |
 | `email_otps`, `*_challenges`, `remote_login_requests` | transient | do not migrate; they expire in minutes |

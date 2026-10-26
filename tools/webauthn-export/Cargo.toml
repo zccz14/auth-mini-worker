@@ -1,0 +1,16 @@
+[package]
+name = "webauthn-export"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The same crate and version the legacy server runs, so a row is read by the code that wrote it.
+# `danger-credential-internals` exposes the credential fields (counter, transports) that the
+# neutral document needs; the legacy build uses `danger-allow-state-serialisation` for challenges,
+# irrelevant here but kept so the feature set stays recognisable.
+[dependencies]
+webauthn-rs = { version = "0.5.5", default-features = false, features = ["danger-allow-state-serialisation", "danger-credential-internals"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
