@@ -53,6 +53,7 @@ import { handleAdminConfig, handleAdminJwks, handleAdminJwksRotate, handleAdminS
 import type { SessionDeps } from './routes/session';
 import { handleMe, handleSessionLogout, handleSessionRefresh, handleTime } from './routes/session';
 import { handleJwks } from './routes/jwks';
+import { isWebAssetPath, serveWebAsset } from './web-assets';
 
 async function emailDeps(request: Request, env: Env): Promise<EmailDeps> {
   return {
@@ -239,6 +240,8 @@ export default {
     if (request.method === 'OPTIONS') return preflight();
 
     const { pathname } = new URL(request.url);
+    if (isWebAssetPath(pathname)) return serveWebAsset(request, env);
+
     const matched = matchRoute(request.method, pathname);
     if (!matched) return errorResponse(404, 'not_found');
 
