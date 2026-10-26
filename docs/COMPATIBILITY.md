@@ -258,6 +258,14 @@ route into the shared header map would silently undo the decision.
 `CURRENT_TIMESTAMP`: `expires_at` carries a `T` where SQLite renders a space, so the legacy
 string comparison was decided by the separator instead of the date and counted nonsense.
 
+Live run against the real D1 (throwaway deployment, rows deleted afterwards): `POST` returned
+`am_uid_` + 64 hex — 71 characters — exactly once; `/integration/user-ids` answered
+`{"user_ids":["<seeded user>"]}` with no `access-control-allow-origin` anywhere in the response and
+answered `401` to a well-formed but unknown token; `/admin/users` reported `active_session_count: 1`
+for that user; a rotation made the previous token answer `401` on its very next call while the new one
+answered `200`; and `DELETE` returned `204`, after which the status was `{"configured":false}` and the
+last good token answered `401`.
+
 ## Key rotation
 
 `POST /admin/jwks/rotate` promotes STANDBY into CURRENT and mints a fresh STANDBY, in **one D1

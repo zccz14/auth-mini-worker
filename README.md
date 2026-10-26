@@ -66,23 +66,23 @@ pnpm db:migrate:local         # apply migrations/ to the local D1
 
 ## Roadmap
 
-1. **Foundation** (this PR): schema, crypto, `GET /jwks`, contract harness.
+1. ~~**Foundation**: schema, crypto, `GET /jwks`, contract harness.~~ Done.
 2. ~~**Email OTP sign-in**: `/email/start`, `/email/verify`.~~ Done.
 3. ~~**Session lifecycle**: `/session/refresh`, `/session/logout`, `/me`, `/time`.~~ Done.
-4. ~~**Admin bootstrap + config**~~ Done. The instance can now be pointed at
+4. ~~**Admin bootstrap + config**~~ Done. The instance can be pointed at
    `https://auth.ntnl.io` instead of the `localhost` seed.
 5. ~~**Ed25519 device auth** (`/ed25519/*`).~~ Done, including a live signature round trip.
 6. ~~**Key rotation**~~ Done.
 7. ~~**Remote approval login** (`/remote-login/*`, `/session/authorize`).~~ Done.
-8. **Rate limiting** for `/email/*` and `/remote-login/start` before anything is publicly reachable.
-3. **Ed25519 device auth**: `/ed25519/*` — challenge bytes must match the legacy server exactly.
-4. **Admin**: `/admin/setup`, `/admin/config`, `/admin/users`, `/admin/jwks(+rotate)`, `/admin/user-directory-token`, `/integration/user-ids`.
-5. **Passkeys**: `/webauthn/*` on WebCrypto, plus the one-shot exporter that converts legacy
+8. ~~**Identity directory**: `/admin/users`, `/admin/user-directory-token`,
+   `/integration/user-ids`.~~ Done, including a live rotation that kills the old token.
+9. **Passkeys**: `/webauthn/*` on WebCrypto, plus the one-shot exporter that converts legacy
    `passkey_json` rows.
-6. **Remote login / SSO**: `/remote-login/*`, `/session/authorize`.
-7. **Login GUI** as Static Assets, at parity with the embedded `ui-web` build.
-8. **Migration + cutover**: import users, credentials, live JWKS keys and sessions from a
-   frozen SQLite snapshot; then flip traffic with the old server read-only for rollback.
+10. **Login GUI** as Static Assets, at parity with the embedded `ui-web` build.
+11. **Rate limiting** for `/email/*` and `/remote-login/start` before anything is publicly
+    reachable.
+12. **Migration + cutover**: import users, credentials, live JWKS keys and sessions from a
+    frozen SQLite snapshot; then flip traffic with the old server read-only for rollback.
 
 ## Licence
 
