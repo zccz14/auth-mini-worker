@@ -11,61 +11,78 @@ export class StrictJsonError extends Error {
   }
 }
 
+interface JsonFrame {
+  kind: 'object' | 'array';
+  keys: Set<string>;
+  expectKey: boolean;
+}
+
+/**
+ * Rejects duplicate keys inside one object, and nothing else.
+ *
+ * The previous version treated every string as a potential key, so a body that reused the same
+ * string as two different values (`{"username":"a@b.c","from_email":"a@b.c"}`) was rejected as a
+ * duplicate. Tracking object context is what makes it correct: only strings that sit in key
+ * position count.
+ */
 function scanDuplicateKeys(text: string): void {
   let index = 0;
-  const stack: Array<Set<string>> = [];
+  const stack: JsonFrame[] = [];
 
-  const skipString = (): void => {
+  const readString = (): string => {
     index += 1;
     while (index < text.length) {
-      const ch = text[index];
-      if (ch === '\\') {
+      const char = text[index];
+      if (char === '\\') {
         index += 2;
         continue;
       }
-      if (ch === '"') {
+      if (char === '"') {
         index += 1;
-        return;
+        return text.slice(0, index);
       }
       index += 1;
     }
     throw new StrictJsonError('unterminated_string');
   };
 
-  const readString = (): string => {
-    const start = index;
-    skipString();
-    return text.slice(start, index);
-  };
-
   while (index < text.length) {
-    const ch = text[index];
-    if (ch === '"') {
-      const raw = readString();
-      const current = stack[stack.length - 1];
-      if (current) {
-        if (current.has(raw)) throw new StrictJsonError('duplicate_field');
-        current.add(raw);
+    const char = text[index];
+    const top = stack[stack.length - 1];
+
+    if (char === '"') {
+      const start = index;
+      readString();
+      const raw = text.slice(start, index);
+      if (top?.kind === 'object' && top.expectKey) {
+        if (top.keys.has(raw)) throw new StrictJsonError('duplicate_field');
+        top.keys.add(raw);
+        top.expectKey = false;
       }
       continue;
     }
-    if (ch === '{') {
-      stack.push(new Set());
+    if (char === '{') {
+      stack.push({ kind: 'object', keys: new Set(), expectKey: true });
       index += 1;
       continue;
     }
-    if (ch === '}') {
+    if (char === '[') {
+      stack.push({ kind: 'array', keys: new Set(), expectKey: false });
+      index += 1;
+      continue;
+    }
+    if (char === '}' || char === ']') {
       stack.pop();
       index += 1;
       continue;
     }
-    if (ch === '[') {
-      stack.push(new Set());
+    if (char === ',') {
+      if (top?.kind === 'object') top.expectKey = true;
       index += 1;
       continue;
     }
-    if (ch === ']') {
-      stack.pop();
+    if (char === ':') {
+      if (top) top.expectKey = false;
       index += 1;
       continue;
     }

@@ -67,3 +67,54 @@ export interface CredentialStore {
 export interface AppMetaStore {
   readIssuer(): Promise<string>;
 }
+
+export interface AppConfig {
+  issuer: string;
+  rpId: string;
+  brandName: string;
+  brandBackgroundImage: string;
+  adminUserId: string | null;
+}
+
+export interface SmtpSummary {
+  id: number;
+  host: string;
+  port: number;
+  username: string;
+  fromEmail: string;
+  fromName: string;
+  secure: boolean;
+  isActive: boolean;
+  weight: number;
+}
+
+export interface SmtpInput {
+  id: number | null;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  fromEmail: string;
+  fromName: string;
+  secure: boolean;
+  weight: number;
+}
+
+export interface AdminCredentialSummary {
+  id: string;
+  name: string;
+  public_key: string;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export interface AdminStore {
+  readConfig(): Promise<AppConfig>;
+  writeConfig(config: Omit<AppConfig, 'adminUserId'>): Promise<void>;
+  listSmtpSummaries(): Promise<SmtpSummary[]>;
+  /** Full replace, exactly like `replace_smtp_configs`: ids not present are deleted. */
+  replaceSmtp(inputs: readonly SmtpInput[]): Promise<void>;
+  firstAdminCredential(): Promise<AdminCredentialSummary | null>;
+  /** Creates the admin user (no email) if missing, then attaches the Ed25519 key. */
+  installAdminEd25519(name: string, publicKey: string, now: string): Promise<void>;
+}

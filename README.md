@@ -35,8 +35,11 @@ Phase 2 — storage and mail transport. Implemented:
 - **Session lifecycle**: `/session/refresh` (rotating refresh token, superseded detection),
   `/session/logout`, `/me`, `/time`.
 
+- **Admin bootstrap and config**: `GET|PUT /admin/setup` (first run only), `GET|PUT /admin/config`
+  (issuer, RP id, branding, SMTP rows).
+
 Not implemented yet: `/session/authorize`, `/session/{id}/logout` (peer logout, needs
-passkey-management auth), `/admin/*`, `/remote-login/*`, `/webauthn/*`, `/ed25519/*`,
+passkey-management auth), the rest of `/admin/*`, `/remote-login/*`, `/webauthn/*`, `/ed25519/*`,
 the login GUI, and the data migration. Nothing is deployed and no route is publicly reachable.
 
 **Do not expose this publicly yet**: `/email/start` has no rate limiting, so a public URL would be
@@ -57,8 +60,10 @@ pnpm db:migrate:local         # apply migrations/ to the local D1
 1. **Foundation** (this PR): schema, crypto, `GET /jwks`, contract harness.
 2. ~~**Email OTP sign-in**: `/email/start`, `/email/verify`.~~ Done.
 3. ~~**Session lifecycle**: `/session/refresh`, `/session/logout`, `/me`, `/time`.~~ Done.
-4. **Ed25519 device auth** (`/ed25519/*`) — the signature is over the raw challenge string bytes.
-5. **Rate limiting** for `/email/*` before anything is publicly reachable.
+4. ~~**Admin bootstrap + config**~~ Done. The instance can now be pointed at
+   `https://auth.ntnl.io` instead of the `localhost` seed.
+5. **Ed25519 device auth** (`/ed25519/*`) — the signature is over the raw challenge string bytes.
+6. **Rate limiting** for `/email/*` before anything is publicly reachable.
 3. **Ed25519 device auth**: `/ed25519/*` — challenge bytes must match the legacy server exactly.
 4. **Admin**: `/admin/setup`, `/admin/config`, `/admin/users`, `/admin/jwks(+rotate)`, `/admin/user-directory-token`, `/integration/user-ids`.
 5. **Passkeys**: `/webauthn/*` on WebCrypto, plus the one-shot exporter that converts legacy
