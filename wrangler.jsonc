@@ -22,5 +22,24 @@
     // Every request goes through src/index.ts, which serves /web/* itself, so unknown API paths
     // still answer JSON 404 instead of the SPA shell.
     "run_worker_first": true
+  },
+
+  // auth-demo is a throwaway twin of production: same code, its own D1 (`auth-mini-demo`) and its
+  // own hostname, so poking at it can never write to the database that production will inherit.
+  // Its rp_id is auth-demo.ntnl.io, so passkeys registered for auth.ntnl.io cannot authenticate
+  // here. That is expected, not a bug.
+  "env": {
+    "demo": {
+      "name": "auth-mini-worker-demo",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "auth-mini-demo",
+          "database_id": "17905ac0-3d1a-420d-a501-228a071f1e59",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "routes": [{ "pattern": "auth-demo.ntnl.io", "custom_domain": true }]
+    }
   }
 }

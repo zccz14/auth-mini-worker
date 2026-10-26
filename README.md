@@ -64,6 +64,20 @@ pnpm dev                      # wrangler dev, local D1
 pnpm db:migrate:local         # apply migrations/ to the local D1
 ```
 
+## Demo deployment
+
+`auth-demo.ntnl.io` runs the same build against its own D1 (`auth-mini-demo`), so poking at it
+never touches the database production will inherit.
+
+```bash
+pnpm web:build
+pnpm exec wrangler d1 migrations apply auth-mini-demo --remote --env demo
+pnpm exec wrangler deploy --env demo
+```
+
+Its `rp_id` is `auth-demo.ntnl.io`, so passkeys registered for `auth.ntnl.io` cannot authenticate
+there — that is expected, and new passkeys registered on the demo domain work normally.
+
 ## Roadmap
 
 1. ~~**Foundation**: schema, crypto, `GET /jwks`, contract harness.~~ Done.
