@@ -1,3 +1,4 @@
+import { parsePasskey } from './webauthn';
 import type {
   AppMetaStore,
   CredentialStore,
@@ -241,19 +242,30 @@ export class D1CredentialStore implements CredentialStore {
   async listWebauthn(userId: string): Promise<Array<Record<string, unknown>>> {
     const { results } = await this.db
       .prepare(
-        `SELECT credential_id, rp_id, last_used_at, created_at FROM webauthn_credentials
+        `SELECT credential_id, passkey_json, rp_id, last_used_at, created_at FROM webauthn_credentials
          WHERE user_id = ?1 ORDER BY created_at ASC, credential_id ASC`,
       )
       .bind(userId)
-      .all<{ credential_id: string; rp_id: string; last_used_at: string | null; created_at: string }>();
-    return results.map((row) => ({
-      id: row.credential_id,
-      credential_id: row.credential_id,
-      transports: [],
-      rp_id: row.rp_id,
-      last_used_at: row.last_used_at,
-      created_at: row.created_at,
-    }));
+      .all<{
+        credential_id: string;
+        passkey_json: string;
+        rp_id: string;
+        last_used_at: string | null;
+        created_at: string;
+      }>();
+    return results.map((row) => {
+      // A row whose stored shape we do not recognise still belongs to the user; only its
+      // transports are unknown, so the listing degrades instead of disappearing.
+      const stored = parsePasskey(row.passkey_json);
+      return {
+        id: row.credential_id,
+        credential_id: row.credential_id,
+        transports: stored?.transports ?? [],
+        rp_id: row.rp_id,
+        last_used_at: row.last_used_at,
+        created_at: row.created_at,
+      };
+    });
   }
 
   async listEd25519(userId: string): Promise<Array<Record<string, unknown>>> {

@@ -80,19 +80,81 @@ rule and is covered by a test.
 Remaining unverified: a successful authenticated send *from Cloudflare* (needs the real password at
 the edge, which is a deliberate step for whoever loads the config into D1/Secrets, not a test).
 
-## WebAuthn (phase 5, deliberately deferred)
+## WebAuthn (phase 6)
 
-Not implemented in this repo yet. Two facts shape the eventual port:
+Five paths: `POST /webauthn/register/options`, `POST /webauthn/register/verify`,
+`POST /webauthn/authenticate/options`, `POST /webauthn/authenticate/verify`,
+`DELETE /webauthn/credentials/{id}`.
 
-1. Auth Mini's passkeys were originally produced by **`@simplewebauthn/server`**; the format only
-   changed when the backend moved to Rust (`webauthn-rs`). That means the target format is a
-   documented, widely used one rather than something invented here.
-2. The TS→Rust conversion therefore exists in `zccz14/auth-mini` git history (see commits around
-   "remove Node backend runtime"), so the `passkey_json` exporter can invert a change that was
-   actually made instead of guessing at a serde layout.
+The ceremony checks — CBOR, COSE keys, attestation statements, DER signatures, origin and rpIdHash
+comparisons — come from **`@simplewebauthn/server` 14**, which verifies on WebCrypto and runs
+unchanged on workerd. That is also the lineage: auth-mini's passkeys were produced by this library
+before the backend moved to `webauthn-rs`, so the port returns to the implementation real devices
+were first tested against. No code here parses webauthn-rs's serde layout.
 
-Until then, no `/webauthn/*` route is registered and the contract test still passes because the
-routes simply do not exist yet.
+What stays hand-written is everything the contract pins down:
+
+| Piece | Rule |
+|---|---|
+| `challenge` | 32 random bytes, base64url, 43 characters |
+| `user.id` | `sha256("auth-mini-webauthn-user-handle\0" + user_id)` cut to 16 bytes, version-5 UUID bits, base64url |
+| `pubKeyCredParams` | `[{alg:-7,type:"public-key"},{alg:-257,type:"public-key"}]` — webauthn-rs's `secure_algs()` |
+| `authenticatorSelection` | `{requireResidentKey:true, residentKey:"required", userVerification:"required"}` |
+| `extensions` | `{credProps:true}` |
+| `timeout` | `300000` |
+| dropped from registration | `attestation`, `hints`, `excludeCredentials` — the legacy projection sends none of them |
+| authentication options | `{challenge, rpId, timeout, userVerification:"required"}`, no `allowCredentials` |
+
+`serde_json` renders maps with sorted keys, so the responses here are emitted in the same
+alphabetical order (`publicKey` before `request_id`; `authenticatorSelection, challenge, extensions,
+pubKeyCredParams, rp, timeout, user`). A test pins the key order rather than leaving it to chance.
+
+Verification matches the legacy `UserVerificationPolicy::Required` (`requireUserVerification: true`,
+`requireUserPresence: true`) and accepts only those two algorithms, so a credential the legacy server
+would have refused cannot slip in here.
+
+### Stored credential
+
+`webauthn_credentials.passkey_json` keeps its column name but holds a neutral document:
+
+```json
+{"format":"auth-mini-passkey","version":1,"id":"<b64url credential id>",
+ "public_key":"<b64url COSE key>","counter":0,"transports":["internal","hybrid"],
+ "user_handle":"<b64url 16-byte handle>","rp_id":"auth.ntnl.io"}
+```
+
+`format`/`version` are the guard: a legacy row that has not been through the exporter fails
+`parsePasskey` and answers `400 invalid_webauthn_authentication`, instead of being misread as a
+credential of ours. `tools/webauthn-export` (Rust, runs `webauthn-rs` natively) rewrites legacy rows
+into exactly this shape at cutover — it emits `user_handle` straight from the credential's
+`user_unique_id`, so the handle never has to be re-derived from a user id.
+
+### Who may manage passkeys
+
+Legacy `authorize_passkey_registration`: an `email_otp` or `webauthn` session may register and delete
+freely; an `ed25519` session may register **only the caller's first passkey**, which is how a device
+key bootstraps a passkey without being able to extend its own trust. The rule is checked before the
+ceremony and again by a conditional `INSERT ... WHERE NOT EXISTS (SELECT 1 ... WHERE user_id = ?)`,
+so a second ceremony cannot land in the gap between check and write. Deleting a credential requires a
+strong session — an Ed25519 session gets `403 insufficient_authentication_method`.
+
+### Config resolution
+
+`issuer` becomes the ceremony origin, and `rp_id` must equal the origin host or be a parent domain of
+it; IP hosts and `localhost` are accepted only as the exact host. The stored issuer has **no**
+trailing slash (production holds `https://auth.ntnl.io`), and a slash makes origin normalisation fail
+closed — the same rule `PUT /admin/config` applies on the way in.
+
+### Verified against production (2026-10-26)
+
+| Check | Result |
+|---|---|
+| `app_meta` read over SSM | `issuer = https://auth.ntnl.io`, `rp_id = auth.ntnl.io`, `brand_name = No Trade No Life` |
+| `POST https://auth.ntnl.io/webauthn/authenticate/options` | `{"publicKey":{"challenge":"<43 chars>","rpId":"auth.ntnl.io","timeout":300000,"userVerification":"required"},"request_id":"<uuid>"}` |
+| key order in that response | `publicKey` then `request_id`; CORS `*` |
+
+That production call created one throwaway challenge row on the legacy server, which expires in five
+minutes; nothing else was touched.
 
 ## L1 — Ed25519 device auth (phase 3)
 
@@ -113,7 +175,7 @@ in the spec; the unimplemented remainder is the roadmap in the README.
 | `app_meta` | issuer, rp_id, brand_*, admin_user_id | copy as-is |
 | `jwks_keys` | **private** material for CURRENT and STANDBY | copy as-is — without this every issued token dies at cutover |
 | `sessions` | live rows with `expires_at > now` | copy as-is, or accept a forced re-login (decide at cutover) |
-| `webauthn_credentials` | `passkey_json` | one-shot exporter runs `webauthn-rs` natively and emits neutral JSON (cred_id, COSE key, counter, user_handle, transports); never hand-parse its serde shape |
+| `webauthn_credentials` | `passkey_json` | one-shot exporter (`tools/webauthn-export`) runs `webauthn-rs` natively and emits the neutral document above — cred id, COSE key, counter, transports, user handle, rp_id; its serde shape is never hand-parsed |
 | `ed25519_credentials` | public keys | copy as-is |
 | `user_directory_token` | token hash | copy as-is — Linkit reads the user-id directory through it |
 | `email_otps`, `*_challenges`, `remote_login_requests` | transient | do not migrate; they expire in minutes |
@@ -137,6 +199,19 @@ These are deliberate, or need confirming against the legacy test suite before cu
 6. **Duplicate JSON keys** → `serde` rejects them for structs; `JSON.parse` keeps the last one.
    `src/http/strict-json.ts` restores the strict behaviour, and unknown-field rejection mirrors
    `#[serde(deny_unknown_fields)]` on every request struct.
+7. **`id` must equal `rawId`** on both ceremonies. The legacy parser only checked that each was
+   non-empty; both decode to the same bytes in every real client, so a mismatch is a malformed
+   request and is rejected up front.
+8. **`authenticatorAttachment` is accepted** on `/webauthn/authenticate/verify`, because
+   `openapi.yaml` allows it there — the Rust struct would have rejected it. The value is ignored;
+   it is client-asserted and carries no trust.
+9. **`userHandle` is compared** with the stored handle when the authenticator sends one. The legacy
+   path identified the user by which credential matched and never looked at the handle; a
+   discoverable credential always returns it, so this only rejects a credential presented under
+   someone else's handle.
+10. **First-passkey race** → the batch spends the challenge and then refuses the insert, where the
+    legacy transaction rolled back both. Reachable only when two ceremonies for one user run
+    concurrently; it fails closed and costs that user one retry.
 
 ## Runtime budget: no paid plan assumed
 

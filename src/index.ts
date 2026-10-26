@@ -18,6 +18,7 @@ import { handleEmailStart, handleEmailVerify } from './routes/email';
 import { D1Ed25519Store } from './d1-ed25519';
 import { D1DirectoryStore } from './d1-directory';
 import { D1RemoteLoginStore } from './d1-remote-login';
+import { D1WebauthnStore } from './d1-webauthn';
 import type { AdminDeps } from './routes/admin';
 import type { DirectoryDeps } from './routes/directory';
 import { handleAdminUsers, handleIntegrationUserIds, handleUserDirectoryToken } from './routes/directory';
@@ -31,6 +32,14 @@ import {
   handleRemoteLoginStart,
   handleSessionAuthorize,
 } from './routes/remote-login';
+import type { WebauthnDeps } from './routes/webauthn';
+import {
+  handleWebauthnAuthenticationOptions,
+  handleWebauthnAuthenticationVerify,
+  handleWebauthnCredentialDelete,
+  handleWebauthnRegisterOptions,
+  handleWebauthnRegisterVerify,
+} from './routes/webauthn';
 import type { Ed25519Deps } from './routes/ed25519';
 import {
   handleEd25519CredentialCreate,
@@ -110,6 +119,16 @@ async function directoryDeps(request: Request, env: Env): Promise<DirectoryDeps>
   };
 }
 
+async function webauthnDeps(request: Request, env: Env): Promise<WebauthnDeps> {
+  return {
+    ...(await sessionDeps(request, env)),
+    webauthnStore: new D1WebauthnStore(env.DB),
+    adminStore: new D1AdminStore(env.DB),
+    clientIp: request.headers.get('cf-connecting-ip'),
+    userAgent: request.headers.get('user-agent'),
+  };
+}
+
 async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
   return {
     ...(await sessionDeps(request, env)),
@@ -160,6 +179,13 @@ const routes: Route[] = [
   route('GET', '/ed25519/credentials', async (request, env) => handleEd25519CredentialsList(request, await ed25519Deps(request, env))),
   route('POST', '/ed25519/credentials', async (request, env) => handleEd25519CredentialCreate(request, await ed25519Deps(request, env))),
   route('POST', '/session/authorize', async (request, env) => handleSessionAuthorize(request, await sessionDeps(request, env))),
+  route('POST', '/webauthn/register/options', async (request, env) => handleWebauthnRegisterOptions(request, await webauthnDeps(request, env))),
+  route('POST', '/webauthn/register/verify', async (request, env) => handleWebauthnRegisterVerify(request, await webauthnDeps(request, env))),
+  route('POST', '/webauthn/authenticate/options', async (request, env) => handleWebauthnAuthenticationOptions(request, await webauthnDeps(request, env))),
+  route('POST', '/webauthn/authenticate/verify', async (request, env) => handleWebauthnAuthenticationVerify(request, await webauthnDeps(request, env))),
+  route('DELETE', '/webauthn/credentials/:id', async (request, env, params) =>
+    handleWebauthnCredentialDelete(request, await webauthnDeps(request, env), params['id'] ?? ''),
+  ),
   route('POST', '/remote-login/start', async (request, env) => handleRemoteLoginStart(request, await remoteLoginDeps(request, env))),
   route('GET', '/remote-login/pending', async (request, env) => handleRemoteLoginPending(request, await remoteLoginDeps(request, env))),
   route('POST', '/remote-login/claim', async (request, env) => handleRemoteLoginClaim(request, await remoteLoginDeps(request, env))),
