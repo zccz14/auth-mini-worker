@@ -43,6 +43,38 @@ only. `kid` is opaque; migrated keys keep their legacy `kid` values verbatim.
 Migrated `sessions` rows stay refreshable only if all five match, so these are covered by
 unit tests rather than trusted.
 
+## Email delivery (phase 2)
+
+Cloudflare blocks outbound TCP to port 25, so "same SMTP as now" cannot mean a port-25 relay.
+What it does mean, and what this repo implements:
+
+- the `smtp_configs` table and its weighted pick are kept as-is (same columns, same ordering,
+  same `is_active` filter, same bucket arithmetic);
+- submission happens over `cloudflare:sockets` to **587 with STARTTLS** or **465 with implicit
+  TLS** — port 25 is the only blocked port, submission ports are allowed;
+- the client refuses to send credentials to a server that does not offer STARTTLS rather than
+  silently downgrading;
+- 10 s timeout, and a rejected `RCPT TO` fails the send instead of reporting success.
+
+Two things still need a real-world check before cutover, because they cannot be settled by unit
+tests: whether the configured account accepts submission from Cloudflare egress, and whether
+465 works with `secureTransport` as expected — if it does not, point the row at 587. Neither
+needs a paid plan.
+
+## WebAuthn (phase 5, deliberately deferred)
+
+Not implemented in this repo yet. Two facts shape the eventual port:
+
+1. Auth Mini's passkeys were originally produced by **`@simplewebauthn/server`**; the format only
+   changed when the backend moved to Rust (`webauthn-rs`). That means the target format is a
+   documented, widely used one rather than something invented here.
+2. The TS→Rust conversion therefore exists in `zccz14/auth-mini` git history (see commits around
+   "remove Node backend runtime"), so the `passkey_json` exporter can invert a change that was
+   actually made instead of guessing at a serde layout.
+
+Until then, no `/webauthn/*` route is registered and the contract test still passes because the
+routes simply do not exist yet.
+
 ## L1 — Ed25519 device auth (phase 3)
 
 `/ed25519/start` returns a `challenge` string; the device signs the **raw UTF-8 bytes of that
@@ -86,6 +118,20 @@ These are deliberate, or need confirming against the legacy test suite before cu
 6. **Duplicate JSON keys** → `serde` rejects them for structs; `JSON.parse` keeps the last one.
    `src/http/strict-json.ts` restores the strict behaviour, and unknown-field rejection mirrors
    `#[serde(deny_unknown_fields)]` on every request struct.
+
+## Runtime budget: no paid plan assumed
+
+Everything here is designed to fit Workers Free plus D1 Free:
+
+| Limit (Free) | Consequence for this design |
+|---|---|
+| 10 ms CPU per request | no CPU-heavy work on the request path; WebCrypto and D1 do the heavy lifting, SMTP wait time is I/O, not CPU |
+| 100 000 requests/day | far above a brand-owned auth server's sign-in volume |
+| 50 subrequests per request | one SMTP connection plus a handful of D1 queries per sign-in |
+| D1: 5 GB, 100 k rows written/day | the auth database is a few thousand rows |
+
+`send_email` (Cloudflare Email Service) is **not** used: sending to arbitrary recipients needs the
+Workers Paid plan, and it would replace the SMTP accounts rather than keep them.
 
 ## Cutover shape
 

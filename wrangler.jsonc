@@ -10,8 +10,7 @@
     {
       "binding": "DB",
       "database_name": "auth-mini",
-      // TODO(migration): replace with the real auth-mini D1 id before the first deploy.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "86c6dcd6-4c00-413e-b695-aec3b4cb9b98",
       "migrations_dir": "migrations"
     }
   ]
