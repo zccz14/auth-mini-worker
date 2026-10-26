@@ -1,0 +1,362 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  authorizeLoginPath,
+  authenticationTarget,
+  buildLoginCallbackUrl,
+  issuerAudience,
+  parseLoginRequest,
+  resolveReturnTo,
+  selfSignInPath,
+  toAppSessionTokens,
+} from '@/lib/login-callback';
+
+describe('login callback helpers', () => {
+  it('treats redirect_uri as optional', () => {
+    expect(parseLoginRequest('')).toEqual({
+      status: 'ready',
+      state: null,
+      target: { kind: 'self' },
+    });
+  });
+
+  it('normalizes issuer hostnames for the self audience', () => {
+    expect(issuerAudience('https://AUTH.Example.com.:8443')).toBe(
+      'auth.example.com',
+    );
+    expect(issuerAudience('https://[::1]:8443')).toBe('::1');
+  });
+
+  it('derives the audience from a normalized HTTPS redirect hostname', () => {
+    const request = parseLoginRequest(
+      '?redirect_uri=https%3A%2F%2FAPP.Example.COM%3A443%2Fcallback',
+    );
+
+    expect(request).toEqual({
+      status: 'ready',
+      state: null,
+      target: {
+        kind: 'redirect',
+        audience: 'app.example.com',
+        audiences: ['app.example.com'],
+        redirectUri: 'https://app.example.com/callback',
+      },
+    });
+    if (request.status === 'ready') {
+      expect(authenticationTarget(request)).toEqual({
+        redirect_uri: 'https://app.example.com/callback',
+        audiences: ['app.example.com'],
+      });
+    }
+  });
+
+  it('normalizes repeated trailing hostname dots like the server', () => {
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=https%3A%2F%2FAPP.Example.com..%2Fcallback',
+      ),
+    ).toMatchObject({
+      status: 'ready',
+      target: {
+        kind: 'redirect',
+        audience: 'app.example.com',
+      },
+    });
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=http%3A%2F%2FLOCALHOST..%3A5173%2Fcallback&audiences=%5B%22localhost%22%2C%22app.example.com%22%5D',
+      ),
+    ).toMatchObject({
+      status: 'ready',
+      target: {
+        kind: 'loopback',
+        audience: 'localhost',
+        audiences: ['localhost', 'app.example.com'],
+      },
+    });
+  });
+
+  it('rejects explicit aud without a loopback redirect', () => {
+    expect(parseLoginRequest('?aud=app.example.com')).toEqual({
+      status: 'invalid',
+      error: 'aud requires a loopback redirect_uri.',
+    });
+    expect(parseLoginRequest('?aud=')).toEqual({
+      status: 'invalid',
+      error: 'aud requires a loopback redirect_uri.',
+    });
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&aud=',
+      ),
+    ).toEqual({
+      status: 'invalid',
+      error: 'aud is only allowed with a loopback redirect_uri.',
+    });
+  });
+
+  it('allows HTTP only for exact loopback hostnames', () => {
+    expect(
+      parseLoginRequest('?redirect_uri=http%3A%2F%2F0.0.0.0%3A5173%2Fcallback'),
+    ).toEqual({
+      status: 'invalid',
+      error: 'redirect_uri must use https unless it is a loopback address.',
+    });
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=http%3A%2F%2Flocalhost.evil.com%3A5173%2Fcallback',
+      ),
+    ).toEqual({
+      status: 'invalid',
+      error: 'redirect_uri must use https unless it is a loopback address.',
+    });
+  });
+
+  it('requires a hostname audience for loopback redirects', () => {
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback',
+      ),
+    ).toEqual({
+      status: 'invalid',
+      error: 'aud or audiences is required for a loopback redirect_uri.',
+    });
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback&aud=',
+      ),
+    ).toEqual({
+      status: 'invalid',
+      error:
+        'audiences must be unique hostnames without a scheme, port, or path.',
+    });
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback&aud=https%3A%2F%2Fapp.example.com',
+      ),
+    ).toEqual({
+      status: 'invalid',
+      error:
+        'audiences must be unique hostnames without a scheme, port, or path.',
+    });
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback&aud=%20app.example.com',
+      ),
+    ).toEqual({
+      status: 'invalid',
+      error:
+        'audiences must be unique hostnames without a scheme, port, or path.',
+    });
+  });
+
+  it('accepts a bare IPv6 hostname as a loopback audience', () => {
+    expect(
+      parseLoginRequest(
+        '?redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A5173%2Fcallback&aud=%3A%3A1',
+      ),
+    ).toMatchObject({
+      status: 'ready',
+      target: {
+        kind: 'loopback',
+        audience: '::1',
+      },
+    });
+  });
+
+  it.each([
+    ['localhost', 'localhost:5173'],
+    ['127.0.0.1', '127.0.0.1:5173'],
+    ['[::1]', '[::1]:5173'],
+  ])('parses the loopback redirect %s', (hostname, displayHost) => {
+    const request = parseLoginRequest(
+      `?redirect_uri=${encodeURIComponent(`http://${hostname}:5173/callback`)}&audiences=${encodeURIComponent(JSON.stringify([hostname.replace(/^\[|\]$/g, '').toLowerCase(), 'APP.NTNL.IO']))}`,
+    );
+
+    expect(request).toEqual({
+      status: 'ready',
+      state: null,
+      target: {
+        kind: 'loopback',
+        audience: hostname.replace(/^\[|\]$/g, '').toLowerCase(),
+        audiences: [
+          hostname.replace(/^\[|\]$/g, '').toLowerCase(),
+          'app.ntnl.io',
+        ],
+        displayHost,
+        redirectUri: `http://${displayHost}/callback`,
+      },
+    });
+    if (request.status === 'ready') {
+      expect(authenticationTarget(request)).toEqual({
+        redirect_uri: `http://${displayHost}/callback`,
+        audiences: [
+          hostname.replace(/^\[|\]$/g, '').toLowerCase(),
+          'app.ntnl.io',
+        ],
+      });
+    }
+  });
+
+  it('requires redirect_uri to be http or https when provided', () => {
+    expect(
+      parseLoginRequest('?redirect_uri=auth-mini%3A%2F%2Fcallback'),
+    ).toEqual({
+      status: 'invalid',
+      error: 'redirect_uri must be a valid http or https URL.',
+    });
+  });
+
+  it('uses document query parameters when hash route search has no redirect_uri', () => {
+    expect(
+      parseLoginRequest(
+        '',
+        '?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&state=state-1',
+      ),
+    ).toEqual({
+      status: 'ready',
+      state: 'state-1',
+      target: {
+        kind: 'redirect',
+        audience: 'app.example.com',
+        audiences: ['app.example.com'],
+        redirectUri: 'https://app.example.com/callback',
+      },
+    });
+  });
+
+  it('rebuilds a downstream request as the authorize address', () => {
+    const request = parseLoginRequest(
+      '?redirect_uri=https%3A%2F%2FAPP.Example.com%3A443%2Fcallback%3Fnext%3D1&state=state-1',
+    );
+    expect(request.status).toBe('ready');
+    if (request.status !== 'ready') return;
+
+    const authorizePath = authorizeLoginPath(request);
+
+    expect(authorizePath).toBe(
+      '/login?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback%3Fnext%3D1&audiences=%5B%22app.example.com%22%5D&state=state-1',
+    );
+    // The rebuilt address parses back into the same request.
+    expect(parseLoginRequest(authorizePath.slice('/login'.length))).toEqual(
+      request,
+    );
+  });
+
+  it('rebuilds a loopback request with audiences instead of aud', () => {
+    const request = parseLoginRequest(
+      '?redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback&aud=LOCALHOST',
+    );
+    expect(request.status).toBe('ready');
+    if (request.status !== 'ready') return;
+
+    const authorizePath = authorizeLoginPath(request);
+
+    expect(authorizePath).toBe(
+      '/login?redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback&audiences=%5B%22localhost%22%5D',
+    );
+    expect(parseLoginRequest(authorizePath.slice('/login'.length))).toEqual(
+      request,
+    );
+  });
+
+  it('keeps a self request free of query parameters', () => {
+    const request = parseLoginRequest('');
+
+    expect(request.status).toBe('ready');
+    if (request.status !== 'ready') return;
+
+    expect(authorizeLoginPath(request)).toBe('/login');
+  });
+
+  it('nests the authorize address inside the sign-in step', () => {
+    const authorizePath =
+      '/login?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&state=state-1';
+
+    expect(selfSignInPath(authorizePath)).toBe(
+      '/login?return_to=%2Flogin%3Fredirect_uri%3Dhttps%253A%252F%252Fapp.example.com%252Fcallback%26state%3Dstate-1',
+    );
+  });
+
+  it('keeps same-origin return paths and their query and hash', () => {
+    expect(resolveReturnTo('/passkey/register')).toBe('/passkey/register');
+    expect(
+      resolveReturnTo(
+        '/login?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&state=state-1',
+      ),
+    ).toBe(
+      '/login?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&state=state-1',
+    );
+    expect(resolveReturnTo('/login?next=%2Fapp#section')).toBe(
+      '/login?next=%2Fapp#section',
+    );
+  });
+
+  it('falls back to the home page for return paths that leave the origin', () => {
+    expect(resolveReturnTo(null)).toBe('/');
+    expect(resolveReturnTo('')).toBe('/');
+    expect(resolveReturnTo('https://evil.example/callback')).toBe('/');
+    expect(resolveReturnTo('//evil.example/callback')).toBe('/');
+    expect(resolveReturnTo('/\\evil.example/callback')).toBe('/');
+    expect(resolveReturnTo('javascript:alert(1)')).toBe('/');
+  });
+
+  it('converts browser session results for self sign-in', () => {
+    expect(
+      toAppSessionTokens({
+        sessionId: 'session-1',
+        accessToken: 'jwt-1',
+        refreshToken: 'refresh-1',
+        receivedAt: '2026-06-30T00:00:00.000Z',
+        expiresAt: '2026-06-30T01:00:00.000Z',
+      }),
+    ).toEqual({
+      session_id: 'session-1',
+      access_token: 'jwt-1',
+      refresh_token: 'refresh-1',
+      expires_in: 3600,
+      token_type: 'Bearer',
+    });
+  });
+
+  it('builds a callback URL with access token data in the fragment', () => {
+    const callbackUrl = buildLoginCallbackUrl({
+      redirectUri: 'https://app.example.com/callback?from=login',
+      state: 'state-1',
+      tokens: {
+        sessionId: 'session-1',
+        accessToken: 'jwt-1',
+        refreshToken: 'refresh-1',
+        receivedAt: '2026-06-30T00:00:00.000Z',
+        expiresAt: '2026-06-30T01:00:00.000Z',
+      },
+    });
+
+    expect(callbackUrl).toBe(
+      'https://app.example.com/callback?from=login#access_token=jwt-1&token_type=Bearer&session_id=session-1&refresh_token=refresh-1&expires_in=3600&expires_at=2026-06-30T01%3A00%3A00.000Z&state=state-1',
+    );
+  });
+
+  it('preserves downstream hash-router paths while appending token data', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-06-30T00:00:00.000Z').getTime(),
+    );
+
+    const callbackUrl = buildLoginCallbackUrl({
+      redirectUri: 'https://app.example.com/#/auth/callback?next=%2Fdashboard',
+      state: null,
+      tokens: {
+        session_id: 'session-2',
+        access_token: 'jwt-2',
+        refresh_token: 'refresh-token',
+        expires_in: 900,
+        token_type: 'Bearer',
+      },
+    });
+
+    expect(callbackUrl).toBe(
+      'https://app.example.com/#/auth/callback?next=%2Fdashboard&access_token=jwt-2&token_type=Bearer&session_id=session-2&refresh_token=refresh-token&expires_in=900&expires_at=2026-06-30T00%3A15%3A00.000Z',
+    );
+
+    vi.mocked(Date.now).mockRestore();
+  });
+});

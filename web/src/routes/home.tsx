@@ -1,64 +1,839 @@
-import { useCallback, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { api } from '@/lib/api';
-import { useI18n } from '@/lib/i18n';
-import { clearSession, loadSession } from '@/lib/session';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { LanguageButton } from '@/components/language-button';
-import { Brand } from '@/routes/login';
+import { Ed25519Keypair } from '@/components/app/ed25519-keypair';
+import { RemoteLoginApprovals } from '@/components/app/remote-login-approvals';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSlot,
+} from '@/components/ui/input-otp';
+import { useApp } from '@/app/providers/app-provider';
+import { generateEd25519Keypair, validateSolanaPublicKey } from '@/lib/ed25519';
+import { useI18n } from '@/lib/i18n';
+import type { AppCurrentUser } from '@/lib/app-sdk';
 
-export function HomeRoute() {
+type Me = AppCurrentUser;
+type SessionCapability = 'manageable' | 'not-manageable' | 'legacy-token';
+type ActiveSession = {
+  id: string;
+  auth_method: string;
+  aud: string;
+  created_at: string;
+  expires_at: string;
+  ip?: string | null;
+  user_agent?: string | null;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padding = (4 - (normalized.length % 4)) % 4;
+  return atob(normalized + '='.repeat(padding));
+}
+
+function getAccessTokenPayload(accessToken: string) {
+  const [, payloadSegment] = accessToken.split('.');
+  if (!payloadSegment) return null;
+
+  try {
+    return asRecord(JSON.parse(decodeBase64Url(payloadSegment)));
+  } catch {
+    return null;
+  }
+}
+
+function getSessionCapability(accessToken: string): SessionCapability {
+  const payload = getAccessTokenPayload(accessToken);
+  if (!payload) {
+    return 'not-manageable';
+  }
+
+  if (!('amr' in payload)) {
+    return 'legacy-token';
+  }
+
+  const amr = Array.isArray(payload.amr)
+    ? payload.amr.filter(
+        (value: unknown): value is string => typeof value === 'string',
+      )
+    : [];
+
+  if (amr.length === 0) {
+    return 'not-manageable';
+  }
+
+  return amr.includes('email_otp') || amr.includes('webauthn')
+    ? 'manageable'
+    : 'not-manageable';
+}
+
+function formatNullable(value: string | null | undefined, unavailable: string) {
+  if (value == null || value.trim() === '') {
+    return unavailable;
+  }
+
+  return value;
+}
+
+function truncateUserAgent(
+  value: string | null | undefined,
+  unavailable: string,
+) {
+  if (value == null || value.trim() === '') {
+    return unavailable;
+  }
+
+  return value.length > 48 ? value.slice(0, 45) + '...' : value;
+}
+
+function formatEmailChangeError(
+  cause: unknown,
+  fallback: string,
+  t: (key: 'home.emailAlreadyInUse' | 'home.invalidEmailChangeOtp') => string,
+) {
+  if (
+    typeof cause === 'object' &&
+    cause !== null &&
+    'error' in cause &&
+    cause.error === 'email_already_in_use'
+  ) {
+    return t('home.emailAlreadyInUse');
+  }
+
+  if (
+    typeof cause === 'object' &&
+    cause !== null &&
+    'error' in cause &&
+    cause.error === 'invalid_email_change_otp'
+  ) {
+    return t('home.invalidEmailChangeOtp');
+  }
+
+  return cause instanceof Error ? cause.message : fallback;
+}
+
+export type HomeSection =
+  | 'all'
+  | 'account'
+  | 'email'
+  | 'remote-login'
+  | 'passkey'
+  | 'ed25519'
+  | 'sessions';
+
+export function HomeRoute({ section = 'all' }: { section?: HomeSection } = {}) {
+  const { serverBaseUrl, sdk, session } = useApp();
   const { t } = useI18n();
-  const [session, setSession] = useState(() => loadSession());
+  const [me, setMe] = useState<Me | null>(null);
+  const [loadingMe, setLoadingMe] = useState(false);
+  const [meError, setMeError] = useState('');
+  const [meWarning, setMeWarning] = useState('');
+  const loadMeRequestIdRef = useRef(0);
+  const [ed25519Name, setEd25519Name] = useState(() =>
+    t('home.defaultEd25519Name'),
+  );
+  const [privateKey, setPrivateKey] = useState('');
+  const [publicKey, setPublicKey] = useState('');
+  const [pendingCredential, setPendingCredential] = useState<string | null>(
+    null,
+  );
+  const [credentialError, setCredentialError] = useState('');
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState('');
+  const [emailChangeEmail, setEmailChangeEmail] = useState('');
+  const [emailChangeCode, setEmailChangeCode] = useState('');
+  const [emailChangeStep, setEmailChangeStep] = useState<'start' | 'verify'>(
+    'start',
+  );
+  const [pendingEmailChange, setPendingEmailChange] = useState<
+    'start' | 'verify' | null
+  >(null);
+  const [emailChangeError, setEmailChangeError] = useState('');
+  const [emailChangeMessage, setEmailChangeMessage] = useState('');
 
-  const signOut = useCallback(async () => {
-    if (session !== null) {
-      try {
-        await api('/session/logout', {
-          method: 'POST',
-          headers: { authorization: `Bearer ${session.accessToken}` },
-        });
-      } catch {
-        // The local session is cleared either way; a dead token needs no apology.
+  const loadMe = useCallback(
+    async (options?: { warningMessage?: string }) => {
+      const requestId = loadMeRequestIdRef.current + 1;
+      loadMeRequestIdRef.current = requestId;
+
+      if (!sdk || !session.authenticated) {
+        setMe(null);
+        setMeError('');
+        setMeWarning('');
+        setLoadingMe(false);
+        return;
       }
+
+      setLoadingMe(true);
+      setMeError('');
+      if (!options?.warningMessage) {
+        setMeWarning('');
+      }
+
+      try {
+        const nextMe = await sdk.currentUser.fetch();
+        if (loadMeRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        setMe(nextMe);
+        setMeWarning('');
+      } catch (cause) {
+        if (loadMeRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        if (options?.warningMessage) {
+          setMeWarning(options.warningMessage);
+          return;
+        }
+
+        setMe(null);
+        setMeError(
+          cause instanceof Error ? cause.message : t('home.loadError'),
+        );
+      } finally {
+        if (loadMeRequestIdRef.current === requestId) {
+          setLoadingMe(false);
+        }
+      }
+    },
+    [sdk, session.authenticated, session.sessionId, t],
+  );
+
+  useEffect(() => {
+    void loadMe();
+  }, [loadMe]);
+
+  async function registerPasskey() {
+    if (!sdk) return;
+    setPendingCredential('passkey');
+    setCredentialError('');
+
+    try {
+      await sdk.passkey.register();
+      await loadMe();
+    } catch (cause) {
+      setCredentialError(
+        cause instanceof Error ? cause.message : t('home.registerPasskeyError'),
+      );
+    } finally {
+      setPendingCredential(null);
     }
-    clearSession();
-    setSession(null);
-  }, [session]);
+  }
+
+  async function generateEd25519() {
+    setPendingCredential('generate-ed25519');
+    setCredentialError('');
+
+    try {
+      const keypair = await generateEd25519Keypair();
+      setPrivateKey(keypair.privateKey);
+      setPublicKey(keypair.publicKey);
+    } catch (cause) {
+      setCredentialError(
+        cause instanceof Error ? cause.message : t('home.generateKeyError'),
+      );
+    } finally {
+      setPendingCredential(null);
+    }
+  }
+
+  async function registerEd25519(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!sdk || validateSolanaPublicKey(publicKey) || !ed25519Name.trim())
+      return;
+    setPendingCredential('register-ed25519');
+    setCredentialError('');
+
+    try {
+      await sdk.ed25519.register({
+        name: ed25519Name.trim(),
+        public_key: publicKey.trim(),
+      });
+      await loadMe();
+    } catch (cause) {
+      setCredentialError(
+        cause instanceof Error ? cause.message : t('home.registerKeyError'),
+      );
+    } finally {
+      setPendingCredential(null);
+    }
+  }
+
+  async function deleteCredential(path: string) {
+    if (!session.accessToken || !window.confirm(t('home.deleteConfirm')))
+      return;
+    setPendingCredential(path);
+    setCredentialError('');
+
+    try {
+      const response = await fetch(new URL(path, serverBaseUrl), {
+        method: 'DELETE',
+        headers: { authorization: 'Bearer ' + session.accessToken },
+      });
+      if (!response.ok) {
+        throw new Error(t('home.deleteFailed'));
+      }
+      await loadMe();
+    } catch (cause) {
+      setCredentialError(
+        cause instanceof Error ? cause.message : t('home.deleteError'),
+      );
+    } finally {
+      setPendingCredential(null);
+    }
+  }
+
+  async function kickSession(sessionId: string) {
+    if (pendingSessionId !== null) {
+      return;
+    }
+
+    if (!sdk || !session.accessToken) {
+      setSessionError(t('home.kickError'));
+      return;
+    }
+
+    setSessionError('');
+    setPendingSessionId(sessionId);
+
+    try {
+      let accessToken = session.accessToken;
+      const capability = getSessionCapability(accessToken);
+
+      if (capability === 'legacy-token' && session.refreshToken) {
+        const refreshed = await sdk.session.refresh();
+        if (typeof refreshed.accessToken === 'string') {
+          accessToken = refreshed.accessToken;
+        }
+      }
+
+      if (getSessionCapability(accessToken) !== 'manageable') {
+        throw new Error(t('home.kickError'));
+      }
+
+      const response = await fetch(
+        new URL('/session/' + sessionId + '/logout', serverBaseUrl),
+        {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + accessToken },
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(t('home.kickError'));
+      }
+
+      await loadMe({
+        warningMessage: t('home.kickRefreshWarning'),
+      });
+    } catch {
+      setSessionError(t('home.kickError'));
+    } finally {
+      setPendingSessionId(null);
+    }
+  }
+
+  async function startEmailChange(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const email = emailChangeEmail.trim();
+    if (!sdk || !me || !email || pendingEmailChange !== null) {
+      return;
+    }
+
+    setPendingEmailChange('start');
+    setEmailChangeError('');
+    setEmailChangeMessage('');
+
+    try {
+      await sdk.currentUser.email.startChange({ email });
+      setEmailChangeEmail(email);
+      setEmailChangeCode('');
+      setEmailChangeStep('verify');
+      setEmailChangeMessage(t('home.emailChangeCodeSent'));
+    } catch (cause) {
+      setEmailChangeError(
+        formatEmailChangeError(cause, t('home.emailChangeStartError'), t),
+      );
+    } finally {
+      setPendingEmailChange(null);
+    }
+  }
+
+  async function verifyEmailChange(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !sdk ||
+      !me ||
+      emailChangeCode.length !== 6 ||
+      pendingEmailChange !== null
+    ) {
+      return;
+    }
+
+    setPendingEmailChange('verify');
+    setEmailChangeError('');
+    setEmailChangeMessage('');
+
+    try {
+      await sdk.currentUser.email.verifyChange({
+        email: emailChangeEmail,
+        code: emailChangeCode,
+      });
+      await loadMe();
+      setEmailChangeEmail('');
+      setEmailChangeCode('');
+      setEmailChangeStep('start');
+      setEmailChangeMessage(t('home.emailChangeSuccess'));
+    } catch (cause) {
+      setEmailChangeError(
+        formatEmailChangeError(cause, t('home.emailChangeVerifyError'), t),
+      );
+    } finally {
+      setPendingEmailChange(null);
+    }
+  }
+
+  function cancelEmailChange() {
+    if (pendingEmailChange !== null) {
+      return;
+    }
+
+    setEmailChangeCode('');
+    setEmailChangeError('');
+    setEmailChangeMessage('');
+    setEmailChangeStep('start');
+  }
+
+  const passkeys = me?.webauthn_credentials ?? [];
+  const ed25519Credentials = me?.ed25519_credentials ?? [];
+  const activeSessions = (me?.active_sessions ?? []) as ActiveSession[];
+  const show = (target: Exclude<HomeSection, 'all'>) =>
+    section === 'all' || section === target;
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-background to-secondary/40 px-4 py-10">
-      <div className="w-full max-w-md">
-        <div className="mb-6 flex items-center justify-between">
-          <Brand />
-          <LanguageButton />
-        </div>
+    <div className="grid gap-4 sm:gap-5">
+      {show('account') ? (
         <Card>
           <CardHeader>
-            <CardTitle>{session === null ? t('home.notSignedIn') : t('home.title')}</CardTitle>
-            <CardDescription>
-              {session === null
-                ? t('app.tagline')
-                : t('home.signedInAs', { email: session.email ?? '—' })}
-            </CardDescription>
+            <CardTitle>{t('common.account')}</CardTitle>
+            <CardDescription>{t('home.description')}</CardDescription>
           </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            <code className="text-xs">{session?.sessionId ?? ''}</code>
+          <CardContent className="grid gap-2 text-sm text-slate-700">
+            <div>
+              {t('home.userId')}:{' '}
+              <span className="break-all font-mono">
+                {me?.user_id ?? t('common.loading')}
+              </span>
+            </div>
+            <div>
+              {t('common.email')}:{' '}
+              <span className="break-words">
+                {me?.email ?? t('home.noVerifiedEmail')}
+              </span>
+            </div>
+            <div>
+              {t('home.sessionId')}:{' '}
+              <span className="break-all font-mono">{session.sessionId}</span>
+            </div>
+            {loadingMe ? (
+              <p className="text-slate-600">{t('home.loadingAccount')}</p>
+            ) : null}
+            {meError ? (
+              <p className="break-words text-rose-600">{meError}</p>
+            ) : null}
+            {meWarning ? (
+              <p className="break-words text-amber-700">{meWarning}</p>
+            ) : null}
           </CardContent>
-          <CardFooter className="gap-2">
-            {session === null ? (
-              <Button asChild className="w-full">
-                <Link to="/login">{t('home.signIn')}</Link>
-              </Button>
-            ) : (
-              <Button variant="outline" className="w-full" onClick={signOut}>
-                {t('home.signOut')}
-              </Button>
-            )}
-          </CardFooter>
         </Card>
-      </div>
-    </main>
+      ) : null}
+
+      {credentialError && (show('passkey') || show('ed25519')) ? (
+        <p className="break-words text-sm text-rose-600">{credentialError}</p>
+      ) : null}
+
+      {show('email') ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('common.email')}</CardTitle>
+            <CardDescription>{t('home.emailDescription')}</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 text-sm text-slate-700">
+            <p>
+              {me?.email ? t('home.emailVerified') : t('home.emailNotVerified')}
+            </p>
+
+            {emailChangeStep === 'start' ? (
+              <form className="grid gap-3" onSubmit={startEmailChange}>
+                <label className="grid gap-2 font-medium text-slate-700">
+                  <span>{t('home.newEmail')}</span>
+                  <Input
+                    aria-label={t('home.newEmail')}
+                    autoComplete="email"
+                    inputMode="email"
+                    type="email"
+                    value={emailChangeEmail}
+                    onChange={(event) =>
+                      setEmailChangeEmail(event.currentTarget.value)
+                    }
+                  />
+                </label>
+                <Button
+                  className="w-full sm:w-fit"
+                  disabled={
+                    !me ||
+                    !emailChangeEmail.trim() ||
+                    pendingEmailChange !== null
+                  }
+                  type="submit"
+                >
+                  {pendingEmailChange === 'start'
+                    ? t('home.sendingEmailChangeCode')
+                    : t('home.sendEmailChangeCode')}
+                </Button>
+              </form>
+            ) : (
+              <form className="grid gap-3" onSubmit={verifyEmailChange}>
+                <div className="grid gap-1">
+                  <span className="font-medium text-slate-700">
+                    {t('home.emailChangeCode')}
+                  </span>
+                  <span className="break-words text-slate-600">
+                    {emailChangeEmail}
+                  </span>
+                </div>
+                <InputOTP
+                  aria-label={t('home.emailChangeOtp')}
+                  maxLength={6}
+                  value={emailChangeCode}
+                  onChange={setEmailChangeCode}
+                >
+                  <InputOTPGroup>
+                    <InputOTPSlot index={0} />
+                    <InputOTPSlot index={1} />
+                    <InputOTPSlot index={2} />
+                    <InputOTPSlot index={3} />
+                    <InputOTPSlot index={4} />
+                    <InputOTPSlot index={5} />
+                  </InputOTPGroup>
+                </InputOTP>
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <Button
+                    className="w-full sm:w-fit"
+                    disabled={
+                      emailChangeCode.length !== 6 ||
+                      pendingEmailChange !== null
+                    }
+                    type="submit"
+                  >
+                    {pendingEmailChange === 'verify'
+                      ? t('home.confirmingEmailChange')
+                      : t('home.confirmEmailChange')}
+                  </Button>
+                  <Button
+                    className="w-full bg-white text-slate-900 ring-1 ring-slate-300 hover:bg-slate-100 sm:w-fit"
+                    disabled={pendingEmailChange !== null}
+                    onClick={cancelEmailChange}
+                    type="button"
+                  >
+                    {t('home.cancelEmailChange')}
+                  </Button>
+                </div>
+              </form>
+            )}
+
+            {emailChangeMessage ? (
+              <p className="text-emerald-700" role="status">
+                {emailChangeMessage}
+              </p>
+            ) : null}
+            {emailChangeError ? (
+              <p className="text-rose-600" role="alert">
+                {emailChangeError}
+              </p>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {show('remote-login') ? (
+        <RemoteLoginApprovals authenticated={session.authenticated} sdk={sdk} />
+      ) : null}
+
+      {show('passkey') ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('common.passkey')}</CardTitle>
+            <CardDescription>{t('home.passkeyDescription')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Button
+              disabled={pendingCredential !== null}
+              onClick={() => void registerPasskey()}
+            >
+              {pendingCredential === 'passkey'
+                ? t('home.registering')
+                : t('home.registerPasskey')}
+            </Button>
+            <CredentialList
+              deletePath={(id) => '/webauthn/credentials/' + id}
+              idKey="credential_id"
+              items={passkeys}
+              onDelete={deleteCredential}
+              pending={pendingCredential}
+            />
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {show('ed25519') ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('common.ed25519')}</CardTitle>
+            <CardDescription>{t('home.ed25519Description')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <form className="grid gap-3" onSubmit={registerEd25519}>
+              <Input
+                value={ed25519Name}
+                onChange={(event) => setEd25519Name(event.currentTarget.value)}
+              />
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <Button
+                  className="w-full sm:w-auto"
+                  type="button"
+                  disabled={pendingCredential !== null}
+                  onClick={() => void generateEd25519()}
+                >
+                  {pendingCredential === 'generate-ed25519'
+                    ? t('setup.generating')
+                    : t('home.generateKey')}
+                </Button>
+                <Button
+                  className="w-full sm:w-auto"
+                  type="submit"
+                  disabled={
+                    !publicKey ||
+                    Boolean(validateSolanaPublicKey(publicKey)) ||
+                    pendingCredential !== null
+                  }
+                >
+                  {pendingCredential === 'register-ed25519'
+                    ? t('home.registering')
+                    : t('home.registerPublicKey')}
+                </Button>
+              </div>
+              {privateKey ? (
+                <Ed25519Keypair publicKey={publicKey} privateKey={privateKey} />
+              ) : null}
+              <label className="grid gap-2 text-sm font-medium text-slate-700">
+                <span>{t('home.publicKey')}</span>
+                <Input
+                  aria-label={t('home.publicKey')}
+                  placeholder={t('common.publicKey')}
+                  value={publicKey}
+                  onChange={(event) => setPublicKey(event.currentTarget.value)}
+                />
+              </label>
+            </form>
+            <CredentialList
+              deletePath={(id) => '/ed25519/credentials/' + id}
+              idKey="id"
+              items={ed25519Credentials}
+              onDelete={deleteCredential}
+              pending={pendingCredential}
+            />
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {show('sessions') ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('home.activeSessions')}</CardTitle>
+            <CardDescription>{t('home.sessionsDescription')}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {sessionError ? (
+              <p className="mb-4 break-words text-sm text-rose-600">
+                {sessionError}
+              </p>
+            ) : null}
+            {meError ? null : activeSessions.length === 0 ? (
+              <p className="text-sm text-slate-600">
+                {t('home.noActiveSessions')}
+              </p>
+            ) : (
+              <ActiveSessionsTable
+                onKick={kickSession}
+                pendingSessionId={pendingSessionId}
+                rows={activeSessions}
+              />
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function CredentialList({
+  deletePath,
+  idKey,
+  items,
+  onDelete,
+  pending,
+}: {
+  deletePath: (id: string) => string;
+  idKey: string;
+  items: Array<Record<string, unknown>>;
+  onDelete: (path: string) => Promise<void>;
+  pending: string | null;
+}) {
+  const { t } = useI18n();
+
+  if (items.length === 0) {
+    return <p className="text-sm text-slate-600">{t('home.noCredentials')}</p>;
+  }
+
+  return (
+    <div className="divide-y divide-slate-200 rounded-md border border-slate-200">
+      {items.map((item) => {
+        const id = String(item[idKey] ?? item.id ?? '');
+        const path = deletePath(id);
+
+        return (
+          <div
+            key={id}
+            className="flex flex-col gap-3 p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="min-w-0">
+              <div className="break-all font-mono text-slate-900">{id}</div>
+              <div className="text-slate-500">
+                {t('home.credentialCreated', {
+                  date: String(item.created_at ?? ''),
+                })}
+              </div>
+            </div>
+            <Button
+              className="self-start bg-white text-rose-700 ring-1 ring-rose-200 hover:bg-rose-50"
+              disabled={pending === path}
+              onClick={() => void onDelete(path)}
+            >
+              {t('common.remove')}
+            </Button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ActiveSessionsTable({
+  onKick,
+  pendingSessionId,
+  rows,
+}: {
+  onKick: (sessionId: string) => Promise<void>;
+  pendingSessionId: string | null;
+  rows: ActiveSession[];
+}) {
+  const { t } = useI18n();
+
+  return (
+    <div className="w-full">
+      <table className="block w-full text-sm sm:table sm:min-w-full sm:border-collapse">
+        <thead className="hidden sm:table-header-group">
+          <tr className="border-b border-slate-200 text-left text-slate-600">
+            <th className="px-3 py-2 font-medium">{t('home.sessionId')}</th>
+            <th className="px-3 py-2 font-medium">{t('home.authMethod')}</th>
+            <th className="px-3 py-2 font-medium">{t('home.audience')}</th>
+            <th className="px-3 py-2 font-medium">{t('home.createdAt')}</th>
+            <th className="px-3 py-2 font-medium">{t('home.expiresAt')}</th>
+            <th className="px-3 py-2 font-medium">{t('home.ip')}</th>
+            <th className="px-3 py-2 font-medium">{t('home.userAgent')}</th>
+            <th className="px-3 py-2 font-medium">{t('common.action')}</th>
+          </tr>
+        </thead>
+        <tbody className="grid gap-3 sm:table-row-group">
+          {rows.map((activeSession) => {
+            const isPending = pendingSessionId === activeSession.id;
+
+            return (
+              <tr
+                key={activeSession.id}
+                className="grid gap-0 rounded-md border border-slate-200 px-4 py-2 sm:table-row sm:rounded-none sm:border-x-0 sm:border-t-0 sm:px-0 sm:py-0"
+              >
+                <SessionField label={t('home.sessionId')}>
+                  {activeSession.id}
+                </SessionField>
+                <SessionField label={t('home.authMethod')}>
+                  {activeSession.auth_method}
+                </SessionField>
+                <SessionField label={t('home.audience')}>
+                  {formatNullable(activeSession.aud, t('common.unavailable'))}
+                </SessionField>
+                <SessionField label={t('home.createdAt')}>
+                  {activeSession.created_at}
+                </SessionField>
+                <SessionField label={t('home.expiresAt')}>
+                  {activeSession.expires_at}
+                </SessionField>
+                <SessionField label={t('home.ip')}>
+                  {formatNullable(activeSession.ip, t('common.unavailable'))}
+                </SessionField>
+                <SessionField label={t('home.userAgent')}>
+                  {truncateUserAgent(
+                    activeSession.user_agent,
+                    t('common.unavailable'),
+                  )}
+                </SessionField>
+                <SessionField label={t('common.action')}>
+                  <Button
+                    className="font-sans"
+                    disabled={isPending}
+                    onClick={() => void onKick(activeSession.id)}
+                  >
+                    {isPending ? t('home.kicking') : t('home.kick')}
+                  </Button>
+                </SessionField>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SessionField({
+  children,
+  label,
+}: {
+  children: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <td className="grid grid-cols-[minmax(5.5rem,0.8fr)_minmax(0,1.2fr)] gap-3 break-all px-0 py-2 font-mono text-xs text-slate-950 sm:table-cell sm:px-3 sm:py-2">
+      <span className="text-xs font-medium text-slate-600 sm:hidden">
+        {label}
+      </span>
+      {children}
+    </td>
   );
 }

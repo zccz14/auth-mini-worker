@@ -178,6 +178,26 @@ provisioned device key, so it is specified here before implementation.
 36 paths, see `openapi.yaml`. `tests/contract.test.ts` asserts every implemented route exists
 in the spec; the unimplemented remainder is the roadmap in the README.
 
+## GUI
+
+The browser console is a wholesale copy of the legacy `ui-web` — all 16 routes, not a
+reimplementation — served by this Worker under `/web/` through the Static Assets binding.
+`web/src/sdk/` is the legacy SDK vendored in so the pages and the published
+`auth-mini-react-components` keep their `auth-mini/sdk/*` imports; `openapi.yaml` here is
+byte-identical to the legacy spec the generated client came from, so the two cannot drift silently.
+
+Three screens call endpoints this Worker does not implement, so they fail at runtime while the rest
+of the console works:
+
+| Screen | Endpoint | State |
+|---|---|---|
+| `/email` | `POST /me/email/start`, `/me/email/verify` | among the 11 unimplemented paths |
+| `/admin/resources` | `GET /admin/resources` | never implemented (deliberate deviation) |
+| `/admin/request-audit` | `GET /admin/request-audit` | never implemented (deliberate deviation) |
+
+`/sessions` lists sessions, but revoking one peer session (`POST /session/{id}/logout`) is also
+missing. Until those land, the three screens render their error state rather than wrong data.
+
 ## Migration inventory (phase 8)
 
 | Table | What moves | Transform |
