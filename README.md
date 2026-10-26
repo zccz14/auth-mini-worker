@@ -28,8 +28,15 @@ Phase 2 — storage and mail transport. Implemented:
 - SMTP submission over `cloudflare:sockets` (587 STARTTLS / 465 implicit TLS) with the legacy
   weighted `smtp_configs` selection, plus audience resolution ported from the legacy server.
 
-Not implemented yet: the `/email/*`, `/session/*` and `/webauthn/*` routes, the login GUI, and
-the data migration. Nothing is deployed and no route is publicly reachable.
+- **Email OTP sign-in works end to end**: `POST /email/start` and `POST /email/verify`, against the
+  real D1 database and the real SMTP account, verified by a throwaway deployment that was deleted
+  right after the test.
+
+Not implemented yet: `/session/*`, `/me`, `/time`, `/admin/*`, `/remote-login/*`, `/webauthn/*`,
+the login GUI, and the data migration. Nothing is deployed and no route is publicly reachable.
+
+**Do not expose this publicly yet**: `/email/start` has no rate limiting, so a public URL would be
+an open mail-sending endpoint. A Durable Object token bucket has to land before any cutover.
 
 ## Local development
 
@@ -44,8 +51,10 @@ pnpm db:migrate:local         # apply migrations/ to the local D1
 ## Roadmap
 
 1. **Foundation** (this PR): schema, crypto, `GET /jwks`, contract harness.
-2. **Email OTP + sessions** (next): `/email/start`, `/email/verify`, `/session/refresh`,
-   `/session/logout`, `/me`, `/time`.
+2. ~~**Email OTP sign-in**: `/email/start`, `/email/verify`.~~ Done.
+3. **Session lifecycle**: `/session/refresh`, `/session/logout`, `/me`, `/time`, and the
+   `/me/email/*` change flow.
+4. **Rate limiting** for `/email/*` before anything is publicly reachable.
 3. **Ed25519 device auth**: `/ed25519/*` — challenge bytes must match the legacy server exactly.
 4. **Admin**: `/admin/setup`, `/admin/config`, `/admin/users`, `/admin/jwks(+rotate)`, `/admin/user-directory-token`, `/integration/user-ids`.
 5. **Passkeys**: `/webauthn/*` on WebCrypto, plus the one-shot exporter that converts legacy
