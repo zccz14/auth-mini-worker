@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MailSocket } from '../src/mail/smtp';
-import { SmtpError, dotStuff, sendSmtpMail } from '../src/mail/smtp';
+import { SmtpError, dotStuff, sendSmtpMail, transportModeFor } from '../src/mail/smtp';
 
 type Reply = string | string[] | null;
 
@@ -60,7 +60,7 @@ class FakeServer {
   }
 }
 
-const endpoint = { host: 'smtp.example.com', port: 587, username: 'mailer', password: 'p@ss word', secure: false };
+const endpoint = { host: 'smtp.example.com', port: 587, username: 'mailer', password: 'p@ss word', secure: true };
 const envelope = { from: 'noreply@example.com', to: 'user@example.com', raw: 'Subject: hi\r\n\r\nbody\r\n.leading dot' };
 
 function submissionServer(options: { auth?: string; starttls?: boolean } & ServerOptions = {}): FakeServer {
@@ -130,7 +130,7 @@ describe('SMTP submission', () => {
       return '250 ok';
     });
 
-    await sendSmtpMail(() => server.socket, { ...endpoint, secure: true }, envelope, { timeoutMs: 1000 });
+    await sendSmtpMail(() => server.socket, { ...endpoint, port: 465 }, envelope, { timeoutMs: 1000 });
 
     expect(server.commands).toContain('AUTH LOGIN');
     expect(atob(server.commands[server.commands.indexOf('AUTH LOGIN') + 1]!)).toBe('mailer');
@@ -146,7 +146,7 @@ describe('SMTP submission', () => {
       return '250 ok';
     });
 
-    const error = await sendSmtpMail(() => server.socket, { ...endpoint, secure: true }, envelope, { timeoutMs: 1000 }).catch(
+    const error = await sendSmtpMail(() => server.socket, { ...endpoint, port: 465 }, envelope, { timeoutMs: 1000 }).catch(
       (caught: unknown) => caught,
     );
     expect((error as SmtpError).stage).toBe('rcpt');
@@ -154,10 +154,19 @@ describe('SMTP submission', () => {
 
   it('times out instead of hanging the request', async () => {
     const server = new FakeServer(() => null, { greeting: null });
-    const error = await sendSmtpMail(() => server.socket, { ...endpoint, secure: true }, envelope, { timeoutMs: 25 }).catch(
+    const error = await sendSmtpMail(() => server.socket, { ...endpoint, port: 465 }, envelope, { timeoutMs: 25 }).catch(
       (caught: unknown) => caught,
     );
     expect((error as SmtpError).stage).toBe('timeout');
+  });
+});
+
+describe('transport mode', () => {
+  it('follows the legacy secure+port rule', () => {
+    expect(transportModeFor(true, 465)).toBe('implicit_tls');
+    expect(transportModeFor(true, 587)).toBe('starttls');
+    expect(transportModeFor(true, 25)).toBe('starttls');
+    expect(transportModeFor(false, 587)).toBe('cleartext');
   });
 });
 
