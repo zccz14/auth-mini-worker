@@ -13,7 +13,7 @@ const spec = parse(openapiSource) as { paths: Record<string, Record<string, unkn
 function matches(template: string, path: string): boolean {
   const pattern = template
     .split('/')
-    .map((segment) => (segment.startsWith('{') ? '[^/]+' : segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    .map((segment) => (/^[{:]/.test(segment) ? '[^/]+' : segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
     .join('/');
   return new RegExp(`^${pattern}$`).test(path);
 }

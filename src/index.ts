@@ -15,13 +15,21 @@ import { buildMimeMessage } from './mail/message';
 import { sendSmtpMail, workerSocketFactory } from './mail/smtp';
 import type { EmailDeps } from './routes/email';
 import { handleEmailStart, handleEmailVerify } from './routes/email';
+import { D1Ed25519Store } from './d1-ed25519';
 import type { AdminDeps } from './routes/admin';
+import type { Ed25519Deps } from './routes/ed25519';
+import {
+  handleEd25519CredentialCreate,
+  handleEd25519CredentialDelete,
+  handleEd25519CredentialUpdate,
+  handleEd25519CredentialsList,
+  handleEd25519Start,
+  handleEd25519Verify,
+} from './routes/ed25519';
 import { handleAdminConfig, handleAdminSetup } from './routes/admin';
 import type { SessionDeps } from './routes/session';
 import { handleMe, handleSessionLogout, handleSessionRefresh, handleTime } from './routes/session';
 import { handleJwks } from './routes/jwks';
-
-type Handler = (request: Request, env: Env) => Promise<Response>;
 
 async function emailDeps(request: Request, env: Env): Promise<EmailDeps> {
   return {
@@ -63,6 +71,15 @@ async function sessionDeps(_request: Request, env: Env): Promise<SessionDeps> {
   };
 }
 
+async function ed25519Deps(request: Request, env: Env): Promise<Ed25519Deps> {
+  return {
+    ...(await sessionDeps(request, env)),
+    ed25519Store: new D1Ed25519Store(env.DB),
+    clientIp: request.headers.get('cf-connecting-ip'),
+    userAgent: request.headers.get('user-agent'),
+  };
+}
+
 async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
   return {
     ...(await sessionDeps(request, env)),
@@ -71,26 +88,74 @@ async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
   };
 }
 
+type Params = Record<string, string>;
+type ParamsHandler = (request: Request, env: Env, params: Params) => Promise<Response>;
+
+interface Route {
+  method: string;
+  /** Segments after the leading slash; `:name` captures one segment. */
+  segments: string[];
+  handler: ParamsHandler;
+}
+
+function route(method: string, path: string, handler: ParamsHandler): Route {
+  return { method, segments: path.split('/').filter((segment) => segment.length > 0), handler };
+}
+
 /**
- * Route table keyed by "METHOD /path". The legacy server dispatches on the same pair, so this
- * table stays the single place where contract coverage is visible.
+ * Route table. The legacy server dispatches on (method, path), so this table stays the single
+ * place where contract coverage is visible.
  */
-const routes = new Map<string, Handler>([
-  ['GET /jwks', handleJwks],
-  ['POST /email/start', async (request, env) => handleEmailStart(request, await emailDeps(request, env))],
-  ['POST /email/verify', async (request, env) => handleEmailVerify(request, await emailDeps(request, env))],
-  ['POST /session/refresh', async (request, env) => handleSessionRefresh(request, await sessionDeps(request, env))],
-  ['POST /session/logout', async (request, env) => handleSessionLogout(request, await sessionDeps(request, env))],
-  ['GET /me', async (request, env) => handleMe(request, await sessionDeps(request, env))],
-  ['GET /time', async () => handleTime(new Date())],
-  ['GET /admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))],
-  ['PUT /admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))],
-  ['GET /admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))],
-  ['PUT /admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))],
-]);
+const routes: Route[] = [
+  route('GET', '/jwks', (request, env) => handleJwks(request, env)),
+  route('POST', '/email/start', async (request, env) => handleEmailStart(request, await emailDeps(request, env))),
+  route('POST', '/email/verify', async (request, env) => handleEmailVerify(request, await emailDeps(request, env))),
+  route('POST', '/session/refresh', async (request, env) => handleSessionRefresh(request, await sessionDeps(request, env))),
+  route('POST', '/session/logout', async (request, env) => handleSessionLogout(request, await sessionDeps(request, env))),
+  route('GET', '/me', async (request, env) => handleMe(request, await sessionDeps(request, env))),
+  route('GET', '/time', async () => handleTime(new Date())),
+  route('GET', '/admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))),
+  route('PUT', '/admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))),
+  route('GET', '/admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))),
+  route('PUT', '/admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))),
+  route('POST', '/ed25519/start', async (request, env) => handleEd25519Start(request, await ed25519Deps(request, env))),
+  route('POST', '/ed25519/verify', async (request, env) => handleEd25519Verify(request, await ed25519Deps(request, env))),
+  route('GET', '/ed25519/credentials', async (request, env) => handleEd25519CredentialsList(request, await ed25519Deps(request, env))),
+  route('POST', '/ed25519/credentials', async (request, env) => handleEd25519CredentialCreate(request, await ed25519Deps(request, env))),
+  route('PATCH', '/ed25519/credentials/:id', async (request, env, params) =>
+    handleEd25519CredentialUpdate(request, await ed25519Deps(request, env), params['id'] ?? ''),
+  ),
+  route('DELETE', '/ed25519/credentials/:id', async (request, env, params) =>
+    handleEd25519CredentialDelete(request, await ed25519Deps(request, env), params['id'] ?? ''),
+  ),
+];
 
 export function routeKeys(): string[] {
-  return [...routes.keys()].sort();
+  return routes.map((entry) => `${entry.method} /${entry.segments.join('/')}`).sort();
+}
+
+function matchRoute(method: string, pathname: string): { route: Route; params: Params } | null {
+  const parts = pathname.split('/').filter((segment) => segment.length > 0);
+  for (const candidate of routes) {
+    if (candidate.method !== method) continue;
+    if (candidate.segments.length !== parts.length) continue;
+    const params: Params = {};
+    let matched = true;
+    for (let index = 0; index < parts.length; index += 1) {
+      const expected = candidate.segments[index]!;
+      const actual = parts[index]!;
+      if (expected.startsWith(':')) {
+        params[expected.slice(1)] = decodeURIComponent(actual);
+        continue;
+      }
+      if (expected !== actual) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return { route: candidate, params };
+  }
+  return null;
 }
 
 export default {
@@ -98,11 +163,11 @@ export default {
     if (request.method === 'OPTIONS') return preflight();
 
     const { pathname } = new URL(request.url);
-    const handler = routes.get(`${request.method} ${pathname}`);
-    if (!handler) return errorResponse(404, 'not_found');
+    const matched = matchRoute(request.method, pathname);
+    if (!matched) return errorResponse(404, 'not_found');
 
     try {
-      return await handler(request, env);
+      return await matched.route.handler(request, env, matched.params);
     } catch (error) {
       if (error instanceof ApiError) return errorResponse(error.status, error.code);
       // Malformed or over-strict bodies are a client error, never a leaked internal code.

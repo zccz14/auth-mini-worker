@@ -38,8 +38,11 @@ Phase 2 — storage and mail transport. Implemented:
 - **Admin bootstrap and config**: `GET|PUT /admin/setup` (first run only), `GET|PUT /admin/config`
   (issuer, RP id, branding, SMTP rows).
 
+- **Ed25519 device auth**: `/ed25519/start`, `/ed25519/verify` (signature over the raw challenge
+  bytes), plus credential list/create/rename/delete behind a strong session.
+
 Not implemented yet: `/session/authorize`, `/session/{id}/logout` (peer logout, needs
-passkey-management auth), the rest of `/admin/*`, `/remote-login/*`, `/webauthn/*`, `/ed25519/*`,
+passkey-management auth), the rest of `/admin/*`, `/remote-login/*`, `/webauthn/*`,
 the login GUI, and the data migration. Nothing is deployed and no route is publicly reachable.
 
 **Do not expose this publicly yet**: `/email/start` has no rate limiting, so a public URL would be
@@ -62,7 +65,7 @@ pnpm db:migrate:local         # apply migrations/ to the local D1
 3. ~~**Session lifecycle**: `/session/refresh`, `/session/logout`, `/me`, `/time`.~~ Done.
 4. ~~**Admin bootstrap + config**~~ Done. The instance can now be pointed at
    `https://auth.ntnl.io` instead of the `localhost` seed.
-5. **Ed25519 device auth** (`/ed25519/*`) — the signature is over the raw challenge string bytes.
+5. ~~**Ed25519 device auth** (`/ed25519/*`).~~ Done, including a live signature round trip.
 6. **Rate limiting** for `/email/*` before anything is publicly reachable.
 3. **Ed25519 device auth**: `/ed25519/*` — challenge bytes must match the legacy server exactly.
 4. **Admin**: `/admin/setup`, `/admin/config`, `/admin/users`, `/admin/jwks(+rotate)`, `/admin/user-directory-token`, `/integration/user-ids`.

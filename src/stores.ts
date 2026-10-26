@@ -118,3 +118,35 @@ export interface AdminStore {
   /** Creates the admin user (no email) if missing, then attaches the Ed25519 key. */
   installAdminEd25519(name: string, publicKey: string, now: string): Promise<void>;
 }
+
+export interface Ed25519CredentialRow {
+  id: string;
+  userId: string;
+  name: string;
+  publicKey: string;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+export interface Ed25519ChallengeRow {
+  requestId: string;
+  credentialId: string;
+  challenge: string;
+  expiresAt: string;
+  consumedAt: string | null;
+}
+
+export interface Ed25519Store {
+  credentialIdsByPublicKey(publicKey: string): Promise<string[]>;
+  credentialById(id: string): Promise<Ed25519CredentialRow | null>;
+  listByUser(userId: string): Promise<Ed25519CredentialRow[]>;
+  /** Returns null when this public key is already registered. */
+  create(userId: string, name: string, publicKey: string, now: string): Promise<Ed25519CredentialRow | null>;
+  updateName(id: string, userId: string, name: string): Promise<Ed25519CredentialRow | null>;
+  remove(id: string, userId: string): Promise<boolean>;
+  createChallenge(requestId: string, credentialId: string, challenge: string, expiresAt: string, now: string): Promise<void>;
+  findChallenge(requestId: string): Promise<Ed25519ChallengeRow | null>;
+  /** One conditional UPDATE: true only when this call consumed a live challenge. */
+  consumeChallenge(requestId: string, now: string): Promise<boolean>;
+  touchLastUsed(credentialId: string, now: string): Promise<void>;
+}

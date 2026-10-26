@@ -1,4 +1,14 @@
-import type { EmailOtpRecord, EmailOtpStore, SessionRecord, SessionRow, SessionStore, UserStore } from '../src/stores';
+import type {
+  Ed25519ChallengeRow,
+  Ed25519CredentialRow,
+  Ed25519Store,
+  EmailOtpRecord,
+  EmailOtpStore,
+  SessionRecord,
+  SessionRow,
+  SessionStore,
+  UserStore,
+} from '../src/stores';
 import type { SigningKeyRow, SigningKeyStore } from '../src/jwks';
 
 export class MemoryOtpStore implements EmailOtpStore {
@@ -114,5 +124,64 @@ export class MemoryCredentialStore {
 
   async listEd25519(): Promise<Array<Record<string, unknown>>> {
     return this.ed25519;
+  }
+}
+
+export class MemoryEd25519Store implements Ed25519Store {
+  credentials: Ed25519CredentialRow[] = [];
+  challenges: Ed25519ChallengeRow[] = [];
+  private counter = 1;
+
+  async credentialIdsByPublicKey(publicKey: string): Promise<string[]> {
+    return this.credentials.filter((row) => row.publicKey === publicKey).map((row) => row.id);
+  }
+
+  async credentialById(id: string): Promise<Ed25519CredentialRow | null> {
+    return this.credentials.find((row) => row.id === id) ?? null;
+  }
+
+  async listByUser(userId: string): Promise<Ed25519CredentialRow[]> {
+    return this.credentials.filter((row) => row.userId === userId);
+  }
+
+  async create(userId: string, name: string, publicKey: string, now: string): Promise<Ed25519CredentialRow | null> {
+    if (this.credentials.some((row) => row.publicKey === publicKey)) return null;
+    const row: Ed25519CredentialRow = { id: `cred-${this.counter++}`, userId, name, publicKey, lastUsedAt: null, createdAt: now };
+    this.credentials.push(row);
+    return row;
+  }
+
+  async updateName(id: string, userId: string, name: string): Promise<Ed25519CredentialRow | null> {
+    const row = this.credentials.find((candidate) => candidate.id === id);
+    if (!row || row.userId !== userId) return null;
+    row.name = name;
+    return row;
+  }
+
+  async remove(id: string, userId: string): Promise<boolean> {
+    const index = this.credentials.findIndex((candidate) => candidate.id === id && candidate.userId === userId);
+    if (index < 0) return false;
+    this.credentials.splice(index, 1);
+    return true;
+  }
+
+  async createChallenge(requestId: string, credentialId: string, challenge: string, expiresAt: string, _now: string): Promise<void> {
+    this.challenges.push({ requestId, credentialId, challenge, expiresAt, consumedAt: null });
+  }
+
+  async findChallenge(requestId: string): Promise<Ed25519ChallengeRow | null> {
+    return this.challenges.find((row) => row.requestId === requestId) ?? null;
+  }
+
+  async consumeChallenge(requestId: string, now: string): Promise<boolean> {
+    const row = this.challenges.find((candidate) => candidate.requestId === requestId);
+    if (!row || row.consumedAt !== null || row.expiresAt <= now) return false;
+    row.consumedAt = now;
+    return true;
+  }
+
+  async touchLastUsed(credentialId: string, now: string): Promise<void> {
+    const row = this.credentials.find((candidate) => candidate.id === credentialId);
+    if (row) row.lastUsedAt = now;
   }
 }
