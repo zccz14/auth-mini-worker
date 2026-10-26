@@ -236,6 +236,28 @@ produced a token, `start` issued codes, `pending` was empty, `claim` returned th
 `pending` then listed it, `approve` answered `{ok:true}`, `exchange` returned a token pair, and the
 replay answered `401`.
 
+## Identity directory
+
+Three paths serve the integration that enumerates accounts: `GET /admin/users`,
+`GET|POST|DELETE /admin/user-directory-token` and `GET /integration/user-ids`.
+
+The directory token is `am_uid_` plus 32 random bytes as hex — 71 characters — stored only as the
+lowercase hex of its SHA-256, the same shape the legacy `user_directory_token` row already carries,
+so the existing token can be copied at cutover instead of every consumer being reissued. `POST`
+returns the plaintext exactly once, on rotation; `GET` reports only `{configured, created_at}`;
+`DELETE` drops the row. Every request compares the presented token against the stored hash, so a
+rotation kills the previous token on the next call — there is no cache to wait out.
+
+`/integration/user-ids` is server-to-server: the directory token buys `{"user_ids": [...]}` and the
+response deliberately carries **no CORS headers**, so a browser page cannot read the user list even
+if it somehow holds the token. `tests/directory.test.ts` asserts that absence, because folding this
+route into the shared header map would silently undo the decision.
+
+`/admin/users` reports per-user credential and session counts. The active-session count compares
+`expires_at` against an RFC 3339 timestamp derived from the request clock rather than against
+`CURRENT_TIMESTAMP`: `expires_at` carries a `T` where SQLite renders a space, so the legacy
+string comparison was decided by the separator instead of the date and counted nonsense.
+
 ## Key rotation
 
 `POST /admin/jwks/rotate` promotes STANDBY into CURRENT and mints a fresh STANDBY, in **one D1
