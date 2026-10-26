@@ -13,5 +13,14 @@
       "database_id": "86c6dcd6-4c00-413e-b695-aec3b4cb9b98",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  // The GUI is served from the same origin as the API, because WebAuthn's rp_id is this host:
+  // no other hostname can run the passkey ceremony for auth.ntnl.io.
+  "assets": {
+    "directory": "./web/dist",
+    "binding": "ASSETS",
+    // Every request goes through src/index.ts, which serves /web/* itself, so unknown API paths
+    // still answer JSON 404 instead of the SPA shell.
+    "run_worker_first": true
+  }
 }
