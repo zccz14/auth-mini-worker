@@ -50,16 +50,35 @@ What it does mean, and what this repo implements:
 
 - the `smtp_configs` table and its weighted pick are kept as-is (same columns, same ordering,
   same `is_active` filter, same bucket arithmetic);
+- the TLS mode follows the legacy rule in `build_smtp_transport`, which is *not* "secure means
+  implicit TLS": `secure && port == 465` is implicit TLS, `secure && port != 465` is STARTTLS,
+  and `false` is explicit cleartext. Port 587 with `secure = 1` therefore means STARTTLS;
 - submission happens over `cloudflare:sockets` to **587 with STARTTLS** or **465 with implicit
   TLS** — port 25 is the only blocked port, submission ports are allowed;
 - the client refuses to send credentials to a server that does not offer STARTTLS rather than
   silently downgrading;
 - 10 s timeout, and a rejected `RCPT TO` fails the send instead of reporting success.
 
-Two things still need a real-world check before cutover, because they cannot be settled by unit
-tests: whether the configured account accepts submission from Cloudflare egress, and whether
-465 works with `secureTransport` as expected — if it does not, point the row at 587. Neither
-needs a paid plan.
+### Verified against production (2026-10-26)
+
+The live `smtp_configs` row is `smtp.feishu.cn:587`, username `auth@ntnl.io`, sender
+`NTNL Authenticator <auth@ntnl.io>`, `secure = 1`. No password was ever copied off the production
+host — every check below either ran on that host or used a deliberately wrong password.
+
+| Check | Where it ran | Result |
+|---|---|---|
+| STARTTLS submission with real credentials, real message | production host | **delivered**, no refused recipients |
+| implicit TLS on 465 with real credentials | production host | AUTH accepted |
+| implicit TLS on **587** | production host | fails, `WRONG_VERSION_NUMBER` — 587 is STARTTLS-only |
+| connect → EHLO → STARTTLS → EHLO → AUTH from Cloudflare egress | Worker on `*.workers.dev`, colo SIN | reached `AUTH`, server answered `535` (wrong password by design) |
+
+The third row is what makes the fourth meaningful: Feishu's 587 must be spoken to with STARTTLS,
+so a client that treats `secure = 1` as implicit TLS would fail in production. That bug existed in
+this repo and was found by this test, not by review — `transportModeFor` now encodes the legacy
+rule and is covered by a test.
+
+Remaining unverified: a successful authenticated send *from Cloudflare* (needs the real password at
+the edge, which is a deliberate step for whoever loads the config into D1/Secrets, not a test).
 
 ## WebAuthn (phase 5, deliberately deferred)
 

@@ -29,7 +29,19 @@ export interface SmtpEndpoint {
   port: number;
   username: string;
   password: string;
+  /**
+   * Legacy `smtp_configs.secure`: "use TLS". The mode follows the port, exactly as
+   * `build_smtp_transport` did — 465 is implicit TLS, every other port is STARTTLS,
+   * and `false` explicitly means cleartext.
+   */
   secure: boolean;
+}
+
+export type TransportMode = 'implicit_tls' | 'starttls' | 'cleartext';
+
+export function transportModeFor(secure: boolean, port: number): TransportMode {
+  if (!secure) return 'cleartext';
+  return port === 465 ? 'implicit_tls' : 'starttls';
 }
 
 export interface Envelope {
@@ -53,6 +65,14 @@ class LineReader {
 
   constructor(stream: ReadableStream<Uint8Array>) {
     this.reader = stream.getReader();
+  }
+
+  releaseLock(): void {
+    try {
+      this.reader.releaseLock();
+    } catch {
+      // already released
+    }
   }
 
   async readLine(): Promise<string> {
@@ -105,7 +125,8 @@ export async function sendSmtpMail(
   const timeoutMs = options.timeoutMs ?? 10_000;
   const heloName = options.heloName ?? 'auth-mini-worker';
 
-  let socket = await factory({ hostname: endpoint.host, port: endpoint.port, implicitTls: endpoint.secure });
+  const mode = transportModeFor(endpoint.secure, endpoint.port);
+  let socket = await factory({ hostname: endpoint.host, port: endpoint.port, implicitTls: mode === 'implicit_tls' });
   let lines = new LineReader(socket.readable);
   let writer = socket.writable.getWriter();
 
@@ -156,11 +177,13 @@ export async function sendSmtpMail(
     let capabilities = await ehlo();
 
     const advertisesStartTls = capabilities.some((line) => line.slice(4).trim().toUpperCase() === 'STARTTLS');
-    if (!endpoint.secure && advertisesStartTls) {
+    if (mode === 'starttls' && advertisesStartTls) {
       await send(`STARTTLS${CRLF}`);
       await expect('starttls', '220');
       if (!socket.startTls) throw new SmtpError('starttls', 'socket cannot be upgraded');
-      // Re-read the upgraded stream: the old reader/writer refer to the plaintext socket.
+      // Drop both locks first: the runtime may hand back the same socket object, and a
+      // still-locked stream cannot be read again after the upgrade.
+      lines.releaseLock();
       try {
         writer.releaseLock();
       } catch {
@@ -170,7 +193,7 @@ export async function sendSmtpMail(
       lines = new LineReader(socket.readable);
       writer = socket.writable.getWriter();
       capabilities = await ehlo();
-    } else if (!endpoint.secure) {
+    } else if (mode === 'starttls') {
       throw new SmtpError('starttls', 'server does not offer STARTTLS; refusing to send credentials in the clear');
     }
 
@@ -198,12 +221,11 @@ export async function sendSmtpMail(
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    try {
-      writer.releaseLock();
-    } catch {
-      // a failed write already released it
-    }
-    await socket.close().catch(() => undefined);
+    // Cleanup must never hold the response hostage: closing a socket mid-handshake can
+    // block indefinitely, so the close is fired and not awaited.
+    void Promise.resolve()
+      .then(() => socket.close())
+      .catch(() => undefined);
   }
 }
 
