@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "auth-mini-worker",
+  "main": "src/index.ts",
+  // Keep this pinned: auth-mini-rs must stay on a compatibility_date that
+  // reproduces the runtime semantics our contract tests were written against.
+  "compatibility_date": "2026-10-25",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "auth-mini",
+      // TODO(migration): replace with the real auth-mini D1 id before the first deploy.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
