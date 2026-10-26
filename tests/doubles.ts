@@ -112,6 +112,14 @@ export class MemoryKeyStore implements SigningKeyStore {
   async insert(row: SigningKeyRow): Promise<void> {
     this.rows.push(row);
   }
+
+  async rotate(next: SigningKeyRow): Promise<void> {
+    const standby = this.rows.find((row) => row.slot === 'STANDBY');
+    if (!standby) throw new Error('missing_standby_key');
+    this.rows = this.rows.filter((row) => row.slot !== 'CURRENT');
+    standby.slot = 'CURRENT';
+    this.rows.push(next);
+  }
 }
 
 export class MemoryCredentialStore {

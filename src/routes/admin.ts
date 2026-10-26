@@ -2,6 +2,7 @@ import { base58Decode } from '../crypto/base58';
 import { authenticateAccessToken } from '../auth';
 import { jsonResponse, errorResponse } from '../http/response';
 import { StrictJsonError, optionalString, parseStrictJsonObject, rejectUnknownKeys, requireObject, requireString } from '../http/strict-json';
+import { adminJwksBody, rotateSigningKeys } from '../jwks';
 import { normalizeAllowedOrigin, normalizeBrandName, normalizeRpId, validateRpIdForIssuer, AdminValidationError } from '../admin/validate';
 import type { AdminStore, AppConfig, SmtpInput } from '../stores';
 import type { SessionDeps } from './session';
@@ -125,6 +126,27 @@ function readSmtpInputs(value: unknown): SmtpInput[] | null {
       index,
     } satisfies SmtpInput & { index: number };
   });
+}
+
+async function requireAdmin(request: Request, deps: AdminDeps): Promise<Response | null> {
+  const auth = await authenticateAccessToken(request, deps);
+  if (!auth) return errorResponse(401, 'invalid_access_token');
+  if (!(await deps.userStore.isAdmin(auth.userId))) return errorResponse(403, 'admin_required');
+  return null;
+}
+
+/** GET /admin/jwks — CURRENT and STANDBY public material. */
+export async function handleAdminJwks(request: Request, deps: AdminDeps): Promise<Response> {
+  const denied = await requireAdmin(request, deps);
+  if (denied) return denied;
+  return jsonResponse(await adminJwksBody(deps.keyStore));
+}
+
+/** POST /admin/jwks/rotate — promote STANDBY, mint a fresh STANDBY. */
+export async function handleAdminJwksRotate(request: Request, deps: AdminDeps): Promise<Response> {
+  const denied = await requireAdmin(request, deps);
+  if (denied) return denied;
+  return jsonResponse(await rotateSigningKeys(deps.keyStore));
 }
 
 /** GET/PUT /admin/config — issuer, RP id, branding and the SMTP rows. */

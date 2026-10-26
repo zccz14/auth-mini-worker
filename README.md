@@ -41,8 +41,11 @@ Phase 2 — storage and mail transport. Implemented:
 - **Ed25519 device auth**: `/ed25519/start`, `/ed25519/verify` (signature over the raw challenge
   bytes), plus credential list/create/rename/delete behind a strong session.
 
+- **Key rotation**: `GET /admin/jwks`, `POST /admin/jwks/rotate` (STANDBY promoted to CURRENT in
+  one D1 batch).
+
 Not implemented yet: `/session/authorize`, `/session/{id}/logout` (peer logout, needs
-passkey-management auth), the rest of `/admin/*`, `/remote-login/*`, `/webauthn/*`,
+passkey-management auth), the remaining `/admin/*`, `/remote-login/*`, `/webauthn/*`,
 the login GUI, and the data migration. Nothing is deployed and no route is publicly reachable.
 
 **Do not expose this publicly yet**: `/email/start` has no rate limiting, so a public URL would be
@@ -66,7 +69,9 @@ pnpm db:migrate:local         # apply migrations/ to the local D1
 4. ~~**Admin bootstrap + config**~~ Done. The instance can now be pointed at
    `https://auth.ntnl.io` instead of the `localhost` seed.
 5. ~~**Ed25519 device auth** (`/ed25519/*`).~~ Done, including a live signature round trip.
-6. **Rate limiting** for `/email/*` before anything is publicly reachable.
+6. ~~**Key rotation**~~ Done.
+7. **Remote approval login** (`/remote-login/*`, `/session/authorize`) — the preferred sign-in flow.
+8. **Rate limiting** for `/email/*` before anything is publicly reachable.
 3. **Ed25519 device auth**: `/ed25519/*` — challenge bytes must match the legacy server exactly.
 4. **Admin**: `/admin/setup`, `/admin/config`, `/admin/users`, `/admin/jwks(+rotate)`, `/admin/user-directory-token`, `/integration/user-ids`.
 5. **Passkeys**: `/webauthn/*` on WebCrypto, plus the one-shot exporter that converts legacy

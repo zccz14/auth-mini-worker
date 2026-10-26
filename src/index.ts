@@ -26,7 +26,7 @@ import {
   handleEd25519Start,
   handleEd25519Verify,
 } from './routes/ed25519';
-import { handleAdminConfig, handleAdminSetup } from './routes/admin';
+import { handleAdminConfig, handleAdminJwks, handleAdminJwksRotate, handleAdminSetup } from './routes/admin';
 import type { SessionDeps } from './routes/session';
 import { handleMe, handleSessionLogout, handleSessionRefresh, handleTime } from './routes/session';
 import { handleJwks } from './routes/jwks';
@@ -118,6 +118,8 @@ const routes: Route[] = [
   route('PUT', '/admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))),
   route('GET', '/admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))),
   route('PUT', '/admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))),
+  route('GET', '/admin/jwks', async (request, env) => handleAdminJwks(request, await adminDeps(request, env))),
+  route('POST', '/admin/jwks/rotate', async (request, env) => handleAdminJwksRotate(request, await adminDeps(request, env))),
   route('POST', '/ed25519/start', async (request, env) => handleEd25519Start(request, await ed25519Deps(request, env))),
   route('POST', '/ed25519/verify', async (request, env) => handleEd25519Verify(request, await ed25519Deps(request, env))),
   route('GET', '/ed25519/credentials', async (request, env) => handleEd25519CredentialsList(request, await ed25519Deps(request, env))),
