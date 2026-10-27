@@ -246,7 +246,9 @@ These are deliberate, or need confirming against the legacy test suite before cu
    path identified the user by which credential matched and never looked at the handle; a
    discoverable credential always returns it, so this only rejects a credential presented under
    someone else's handle.
-10. **First-passkey race** → the batch spends the challenge and then refuses the insert, where the
+10. **`GET /admin/setup` after the claim** → `403 admin_setup_forbidden`, where production legacy
+    answers `200` with admin/SMTP metadata. Deliberate; see **Admin bootstrap**.
+11. **First-passkey race** → the batch spends the challenge and then refuses the insert, where the
     legacy transaction rolled back both. Reachable only when two ceremonies for one user run
     concurrently; it fails closed and costs that user one retry.
 
@@ -397,10 +399,29 @@ served the promoted pair with the old CURRENT gone.
 `PUT /admin/setup` installs the first admin Ed25519 key and the user row that owns it; a second
 call answers `409 already_initialized`, and `GET /admin/setup` answers `403` once an admin exists.
 
-**Divergence:** the legacy server gated setup on the caller being on loopback. A Worker has no
-loopback, so the gate here is "no admin exists yet" plus an optional `ADMIN_SETUP_TOKEN` header
-check. Set that variable in production: without it, the window between deploy and the owner
-claiming admin is open to anyone who reaches the URL.
+**Divergence (deliberate, decided 2026-10-27):** the legacy server gated setup on the caller
+being on loopback. A Worker has no loopback, so the gate here is "no admin exists yet" plus an
+optional `ADMIN_SETUP_TOKEN` header check. Set that variable in production: without it, the
+window between deploy and the owner claiming admin is open to anyone who reaches the URL.
+
+What the legacy gate actually did in production is worth stating plainly, because the GUI was
+written against its behaviour: `auth.ntnl.io` is fronted by something running on the host itself (a
+local proxy or tunnel), so every browser request arrives with a loopback peer and `GET
+/admin/setup` answers **200** — with `admin_user_id`, the admin credential name and the SMTP
+hostnames — to anyone on the internet. Consequences:
+
+- The GUI's `catch` for `403 admin_setup_forbidden` was dead code in production; it read that
+  status as a failed load, so a Worker that answers `403` after the claim left the claim form on
+  screen forever. `web/src/app/providers/app-provider.tsx` now treats that exact status/code pair
+  as "initialized" and every consumer reads the resulting flag instead of a payload it may never
+  receive.
+- Keeping `403` here is a **security improvement over parity**, not an oversight: the endpoint
+  stops publishing admin credential metadata and SMTP hostnames to anonymous callers. Clients
+  written against the legacy server handle both answers, since both are reachable legacy states
+  (loopback vs. not).
+- Verified 2026-10-27: `curl https://auth.ntnl.io/admin/setup` → `200` with an admin present;
+  `curl https://auth.ntnl.io/jwks` → two keys whose members are
+  `alg, crv, kid, kty, use, x`.
 
 `PUT /admin/config` requires an admin token and enforces the legacy rules: issuer must be
 `scheme://host[:port]/` with no credentials, query, fragment or path; `rp_id` must be a plain DNS
