@@ -435,6 +435,7 @@ export class MemoryAdminStore implements AdminStore {
   };
   smtp: Array<SmtpSummary & { password: string }> = [];
   adminCredential: AdminCredentialSummary | null = null;
+  pendingRootUser: string | null = null;
   private nextId = 1;
 
   async readConfig(): Promise<AppConfig> {
@@ -469,8 +470,14 @@ export class MemoryAdminStore implements AdminStore {
     return this.adminCredential;
   }
 
-  async installAdminEd25519(name: string, publicKey: string, now: string): Promise<void> {
-    this.config.adminUserId = this.config.adminUserId ?? 'admin-user';
-    this.adminCredential = { id: 'cred-1', name, public_key: publicKey, last_used_at: null, created_at: now };
+  async ensureRootUser(): Promise<string> {
+    this.pendingRootUser = this.pendingRootUser ?? `root-${++this.nextId}`;
+    return this.pendingRootUser;
+  }
+
+  async claimRootUser(userId: string, relyingParty: { issuer: string; rpId: string }): Promise<boolean> {
+    if (this.config.adminUserId !== null) return false;
+    this.config = { ...this.config, adminUserId: userId, issuer: relyingParty.issuer, rpId: relyingParty.rpId };
+    return true;
   }
 }

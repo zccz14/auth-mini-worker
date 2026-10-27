@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Ed25519Keypair } from '@/components/app/ed25519-keypair';
 import {
   Card,
   CardContent,
@@ -9,61 +10,89 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useApp } from '@/app/providers/app-provider';
-import { generateEd25519Keypair } from '@/lib/ed25519';
 import { useI18n } from '@/lib/i18n';
+import { readSetupToken, writeSetupToken } from '@/lib/setup-token';
+import {
+  decodeRegistrationOptions,
+  serializeRegistrationCredential,
+} from '@/lib/webauthn';
 
+/**
+ * `/initialize` — the one-time claim.
+ *
+ * It does exactly one thing: create the root user, with a passkey as its credential. The instance
+ * has no administrator yet, so nothing here can be authorized by a session; the optional setup
+ * token is the only shared secret involved.
+ *
+ * The relying party is read from the address bar rather than from the server, because the server
+ * still says `localhost` until somebody claims it — and changing that needs the very
+ * administrator this page creates. The owner confirms the two values before the passkey is made.
+ */
 export function SetupRoute() {
-  const { reloadSetupState, sdk } = useApp();
+  const { reloadSetupState, sdk, setupError } = useApp();
   const { t } = useI18n();
-  const [name, setName] = useState(() => t('setup.defaultCredentialName'));
-  const [privateKey, setPrivateKey] = useState('');
-  const [publicKey, setPublicKey] = useState('');
-  const [saved, setSaved] = useState(false);
-  const [pending, setPending] = useState<'generate' | 'initialize' | null>(
-    null,
-  );
+  const navigate = useNavigate();
+  const [token, setToken] = useState(() => readSetupToken());
+  const [pending, setPending] = useState<'reload' | 'initialize' | null>(null);
   const [error, setError] = useState('');
+  const [claimed, setClaimed] = useState(false);
 
-  async function generateKey() {
-    setPending('generate');
+  const issuer = window.location.origin;
+  const rpId = window.location.hostname;
+  const canInitialize = Boolean(sdk) && pending === null;
+
+  async function reload() {
+    setPending('reload');
     setError('');
-
+    writeSetupToken(token);
     try {
-      const keypair = await generateEd25519Keypair();
-      setPrivateKey(keypair.privateKey);
-      setPublicKey(keypair.publicKey);
-      setSaved(false);
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : t('setup.generateError'),
-      );
+      await reloadSetupState();
     } finally {
       setPending(null);
     }
   }
 
-  async function initialize(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!sdk || !saved || !publicKey || !name.trim()) {
+  async function initialize() {
+    if (!sdk || pending !== null) return;
+    if (typeof navigator === 'undefined' || typeof navigator.credentials?.create !== 'function') {
+      setError(t('setup.passkeyUnsupported'));
       return;
     }
 
     setPending('initialize');
     setError('');
+    writeSetupToken(token);
 
     try {
+      const options = await sdk.admin.setup.passkeyOptions();
+      const credential = (await navigator.credentials.create({
+        publicKey: decodeRegistrationOptions(options.publicKey),
+      })) as PublicKeyCredential | null;
+      if (credential === null) throw new Error(t('setup.passkeyCancelled'));
+
       await sdk.admin.setup.initialize({
-        admin_ed25519: {
-          name: name.trim(),
-          public_key: publicKey,
-        },
+        request_id: options.request_id,
+        credential: serializeRegistrationCredential(credential),
+        issuer,
+        rp_id: rpId,
       });
+      setClaimed(true);
+
+      // The claim only creates the administrator. Signing in is a separate ceremony, and it is
+      // what puts this browser on the inside; a dismissed prompt costs one manual sign-in later.
+      let signedIn = false;
+      try {
+        await sdk.passkey.authenticate();
+        signedIn = true;
+      } catch {
+        signedIn = false;
+      }
       await reloadSetupState();
+      navigate(signedIn ? '/' : '/login', { replace: true });
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : t('setup.initializeError'),
-      );
+      setError(cause instanceof Error ? cause.message : t('setup.initializeError'));
     } finally {
       setPending(null);
     }
@@ -76,55 +105,69 @@ export function SetupRoute() {
           <CardTitle>{t('setup.title')}</CardTitle>
           <CardDescription>{t('setup.description')}</CardDescription>
         </CardHeader>
-        <CardContent>
-          <form className="space-y-5" onSubmit={initialize}>
-            <label className="grid gap-2 text-sm font-medium text-slate-700">
-              <span>{t('common.credentialName')}</span>
-              <Input
-                value={name}
-                onChange={(event) => setName(event.currentTarget.value)}
-              />
-            </label>
-
-            <div className="flex flex-wrap gap-3">
-              <Button
-                type="button"
-                disabled={pending !== null}
-                onClick={() => void generateKey()}
-              >
-                {pending === 'generate'
-                  ? t('setup.generating')
-                  : t('setup.generate')}
-              </Button>
-            </div>
-
-            {privateKey ? (
-              <div className="grid gap-4">
-                <Ed25519Keypair publicKey={publicKey} privateKey={privateKey} />
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={saved}
-                    onChange={(event) => setSaved(event.currentTarget.checked)}
-                  />
-                  {t('setup.privateKeySaved')}
-                </label>
+        <CardContent className="space-y-5">
+          <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
+            <p className="font-medium text-slate-700">{t('setup.originTitle')}</p>
+            <dl className="grid gap-1 text-slate-600">
+              <div className="flex flex-wrap gap-2">
+                <dt className="font-medium">{t('common.issuer')}</dt>
+                <dd className="break-all font-mono">{issuer}</dd>
               </div>
-            ) : null}
+              <div className="flex flex-wrap gap-2">
+                <dt className="font-medium">{t('common.rpId')}</dt>
+                <dd className="break-all font-mono">{rpId}</dd>
+              </div>
+            </dl>
+            <p className="text-xs leading-5 text-slate-500">
+              {t('setup.originHint')}
+            </p>
+          </div>
 
-            {error ? <p className="text-sm text-rose-600">{error}</p> : null}
+          <div className="grid gap-2">
+            <Label htmlFor="setup-token">{t('setup.tokenLabel')}</Label>
+            <Input
+              id="setup-token"
+              type="password"
+              autoComplete="off"
+              value={token}
+              placeholder="ADMIN_SETUP_TOKEN"
+              onChange={(event) => setToken(event.currentTarget.value)}
+            />
+            <p className="text-xs leading-5 text-slate-500">
+              {t('setup.tokenHint')}
+            </p>
+          </div>
 
-            <Button
-              type="submit"
-              disabled={
-                !saved || !publicKey || pending !== null || !name.trim()
-              }
-            >
+          {setupError ? (
+            <Alert className="border-amber-200 bg-amber-50 text-amber-900">
+              <AlertTitle>{t('common.unavailable')}</AlertTitle>
+              <AlertDescription>{t('setup.tokenRequired')}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          {claimed ? (
+            <Alert className="border-emerald-200 bg-emerald-50 text-emerald-900">
+              <AlertTitle>{t('setup.claimed')}</AlertTitle>
+            </Alert>
+          ) : null}
+
+          {error ? <p className="text-sm text-rose-600">{error}</p> : null}
+
+          <div className="flex flex-wrap gap-3">
+            <Button disabled={!canInitialize} onClick={() => void initialize()}>
               {pending === 'initialize'
                 ? t('setup.initializing')
-                : t('setup.complete')}
+                : t('setup.passkeyButton')}
             </Button>
-          </form>
+            <Button
+              type="button"
+              className="border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+              disabled={pending !== null}
+              onClick={() => void reload()}
+            >
+              {pending === 'reload' ? t('common.loading') : t('setup.retry')}
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

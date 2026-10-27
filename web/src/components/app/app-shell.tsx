@@ -208,7 +208,9 @@ export function AppShell() {
   }
 
   if (initialized && setupPath) {
-    return <Navigate to="/login" replace />;
+    // The claim signs this browser in, so an authenticated visitor finishing `/initialize` goes
+    // home instead of being sent to a login page it no longer needs.
+    return <Navigate to={authenticated ? '/' : '/login'} replace />;
   }
 
   if (initialized && !authenticated && !loginPath) {

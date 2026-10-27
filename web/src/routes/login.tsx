@@ -86,7 +86,11 @@ export function LoginRoute() {
   const ssoAttemptRef = useRef(false);
 
   const sdkReady = Boolean(sdk);
-  const passkeyConfigured = Boolean(setupState?.rp_id);
+  // The bootstrap payload is gated once the root user is claimed, but the instance still has
+  // passkeys; falling back to that fact keeps the passkey button on the login page.
+  const passkeyConfigured = setupState
+    ? Boolean(setupState.rp_id)
+    : setupInitialized;
   const privateKeyError =
     privateKey.trim() === '' ? '' : validateEd25519PrivateKey(privateKey);
   const canStartEmail =

@@ -98,36 +98,52 @@ paths:
       tags:
         - admin
       operationId: getAdminSetup
-      summary: Read local admin setup state
+      summary: Read the first-run state of this instance
+      description: >-
+        Answers with what an unauthenticated shell needs — whether a root user exists, and the
+        branding to render — and nothing else. The administrator's credentials and the SMTP
+        configuration are `/admin/config`, behind a token. Once the root user is claimed this
+        route answers 403 `admin_setup_forbidden`; while `ADMIN_SETUP_TOKEN` is configured a
+        caller must present it, and a missing or wrong token answers 403
+        `admin_setup_token_required` so "not allowed yet" stays distinguishable from "already
+        done".
+      parameters:
+        - $ref: '#/components/parameters/AdminSetupToken'
       responses:
         '200':
-          description: Current admin setup state
+          description: The instance still needs its root user
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AdminSetupState'
+                $ref: '#/components/schemas/AdminSetupBootstrap'
         '403':
-          description: Admin setup is only available from loopback clients
+          description: Already claimed, or the setup token is missing or wrong
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: admin_setup_forbidden
-        '501':
-          description: Database-backed setup is not available
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: not_implemented
+              examples:
+                forbidden:
+                  value:
+                    error: admin_setup_forbidden
+                token_required:
+                  value:
+                    error: admin_setup_token_required
     put:
       security: []
       tags:
         - admin
       operationId: updateAdminSetup
-      summary: Initialize the administrator account with an ED25519 credential
+      summary: Claim the root user with a registered passkey
+      description: >-
+        The one-time claim. Verifies the registration ceremony started by
+        `POST /admin/setup/passkey/options`, stores the credential, and only then points
+        `app_meta.admin_user_id` at the user — an administrator without a credential would be an
+        instance nobody can sign in to. The issuer and RP ID recorded are the ones the request
+        arrived on; the optional `issuer` and `rp_id` fields let the page confirm the values it
+        showed the owner, and a mismatch is refused rather than silently claimed.
+      parameters:
+        - $ref: '#/components/parameters/AdminSetupToken'
       requestBody:
         required: true
         content:
@@ -136,37 +152,100 @@ paths:
               $ref: '#/components/schemas/AdminSetupRequest'
       responses:
         '200':
-          description: Updated admin setup state
+          description: The root user is created; the passkey can now sign in
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AdminSetupState'
+                $ref: '#/components/schemas/OkResponse'
         '400':
-          $ref: '#/components/responses/InvalidRequest'
-        '403':
-          description: Admin setup is only available from loopback clients
+          description: Malformed body, unusable host, or a failed ceremony
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: admin_setup_forbidden
+              examples:
+                invalid_request:
+                  value:
+                    error: invalid_request
+                invalid_setup_origin:
+                  value:
+                    error: invalid_setup_origin
+                invalid_webauthn_registration:
+                  value:
+                    error: invalid_webauthn_registration
+        '403':
+          description: Already claimed, or the setup token is missing or wrong
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                forbidden:
+                  value:
+                    error: admin_setup_forbidden
+                token_required:
+                  value:
+                    error: admin_setup_token_required
         '409':
-          description: Administrator account already exists
+          description: Somebody else claimed the instance first
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
                 error: already_initialized
-        '501':
-          description: Database-backed setup is not available
+  /admin/setup/passkey/options:
+    post:
+      security: []
+      tags:
+        - admin
+      operationId: createAdminSetupPasskeyOptions
+      summary: Start the one-time passkey registration for the root user
+      description: >-
+        Creates the root user row (a registration challenge holds a foreign key to `users`) and
+        issues a discoverable-credential challenge bound to the origin of this request. Available
+        only while no administrator exists; the claim is completed by `PUT /admin/setup`.
+      parameters:
+        - $ref: '#/components/parameters/AdminSetupToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebauthnOptionsRequest'
+      responses:
+        '200':
+          description: Registration challenge created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebauthnRegistrationOptionsResponse'
+        '400':
+          description: Malformed body, or an origin a passkey cannot be bound to
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: not_implemented
+              examples:
+                invalid_request:
+                  value:
+                    error: invalid_request
+                invalid_setup_origin:
+                  value:
+                    error: invalid_setup_origin
+        '403':
+          description: Already claimed, or the setup token is missing or wrong
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                forbidden:
+                  value:
+                    error: admin_setup_forbidden
+                token_required:
+                  value:
+                    error: admin_setup_token_required
   /admin/config:
     get:
       tags:
@@ -1144,6 +1223,15 @@ components:
       scheme: bearer
       bearerFormat: JWT
   parameters:
+    AdminSetupToken:
+      name: X-Admin-Setup-Token
+      in: header
+      required: false
+      description: >-
+        Shared secret that opens the first-run window. Required only when the deployment sets
+        `ADMIN_SETUP_TOKEN`; a Worker has no loopback to gate on instead.
+      schema:
+        type: string
     CredentialId:
       name: id
       in: path
@@ -1237,10 +1325,23 @@ components:
       type: object
       additionalProperties: false
       required:
-        - admin_ed25519
+        - request_id
+        - credential
       properties:
-        admin_ed25519:
-          $ref: '#/components/schemas/AdminSetupEd25519Input'
+        request_id:
+          type: string
+          format: uuid
+        credential:
+          $ref: '#/components/schemas/RegistrationCredentialJson'
+        issuer:
+          type: string
+          format: uri
+          description: >-
+            Optional confirmation of the origin the page displayed. When present it must equal
+            the origin the request arrived on.
+        rp_id:
+          type: string
+          description: Optional confirmation of the RP ID the page displayed. Must match the request host.
     AdminConfigRequest:
       type: object
       additionalProperties: false
@@ -1267,21 +1368,6 @@ components:
               items:
                 $ref: '#/components/schemas/AdminSetupSmtpInput'
             - type: 'null'
-    AdminSetupEd25519Input:
-      type: object
-      additionalProperties: false
-      required:
-        - name
-        - public_key
-      properties:
-        name:
-          type: string
-          minLength: 1
-        public_key:
-          type: string
-          description: Canonical base58-encoded 32-byte Ed25519 public key.
-          minLength: 32
-          maxLength: 44
     AdminSetupSmtpInput:
       type: object
       additionalProperties: false
@@ -1582,6 +1668,29 @@ components:
         ed25519_count:
           type: integer
           minimum: 0
+    AdminSetupBootstrap:
+      type: object
+      additionalProperties: false
+      required:
+        - issuer
+        - rp_id
+        - brand_name
+        - brand_background_image
+        - admin_user_id
+      properties:
+        issuer:
+          type: string
+          format: uri
+        rp_id:
+          type: string
+        brand_name:
+          type: string
+        brand_background_image:
+          type: string
+        admin_user_id:
+          type:
+            - 'string'
+            - 'null'
     AdminSetupState:
       type: object
       additionalProperties: false

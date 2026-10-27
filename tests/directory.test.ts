@@ -11,6 +11,7 @@ import {
   MemoryKeyStore,
   MemorySessionStore,
   MemoryUserStore,
+  MemoryWebauthnStore,
 } from './doubles';
 
 const NOW = new Date('2026-10-26T09:00:00.000Z');
@@ -33,6 +34,7 @@ async function harness(options: { admin?: boolean } = {}) {
     userStore,
     credentialStore: new MemoryCredentialStore(),
     adminStore: new MemoryAdminStore(),
+    webauthnStore: new MemoryWebauthnStore(),
     setupToken: null,
     directoryStore,
     now: NOW,

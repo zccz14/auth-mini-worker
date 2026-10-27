@@ -68,3 +68,40 @@ export function validateRpIdForIssuer(issuer: string, rpId: string): void {
   const host = hostOf(new URL(issuer));
   if (!isRpIdAllowedForOrigin(host, rpId)) throw new AdminValidationError('rp_id_mismatch');
 }
+
+/** A real DNS name: `localhost` for local development, otherwise at least two labels and no numeric TLD. */
+function isDnsName(rpId: string): boolean {
+  if (rpId === 'localhost') return true;
+  const labels = rpId.split('.');
+  return labels.length > 1 && !/^[0-9]+$/.test(labels[labels.length - 1]!);
+}
+
+/**
+ * The relying party a first-run claim is bound to: whatever host the owner actually reached us on.
+ *
+ * Nothing else can supply it. A fresh database still says `localhost`, and changing that needs an
+ * administrator token — which is exactly what the claim is there to create. WebAuthn also pins
+ * `rp_id` to the origin for the lifetime of every credential, so an IP literal or a one-label host
+ * would lock the instance into a configuration no authenticator can accept. The page shows these
+ * two values before the owner confirms, and sends them back so a stale tab cannot claim a host
+ * nobody looked at.
+ */
+export function deriveSetupRelyingParty(requestUrl: string): { issuer: string; rpId: string } | null {
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    return null;
+  }
+  let issuer: string;
+  let rpId: string;
+  try {
+    issuer = normalizeAllowedOrigin(url.origin);
+    rpId = normalizeRpId(url.hostname);
+  } catch {
+    return null;
+  }
+  if (!isDnsName(rpId)) return null;
+  if (!isRpIdAllowedForOrigin(url.hostname.toLowerCase(), rpId)) return null;
+  return { issuer, rpId };
+}

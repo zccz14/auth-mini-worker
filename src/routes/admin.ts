@@ -1,19 +1,47 @@
-import { base58Decode } from '../crypto/base58';
+import type { RegistrationResponseJSON } from '@simplewebauthn/server';
 import { authenticateAccessToken } from '../auth';
+import { uuidv4 } from '../crypto/tokens';
 import { jsonResponse, errorResponse } from '../http/response';
-import { StrictJsonError, optionalString, parseStrictJsonObject, rejectUnknownKeys, requireObject, requireString } from '../http/strict-json';
+import { StrictJsonError, optionalString, parseStrictJsonObject, rejectUnknownKeys, requireString } from '../http/strict-json';
 import { adminJwksBody, rotateSigningKeys } from '../jwks';
-import { normalizeAllowedOrigin, normalizeBrandName, normalizeRpId, validateRpIdForIssuer, AdminValidationError } from '../admin/validate';
-import type { AdminStore, AppConfig, SmtpInput } from '../stores';
+import {
+  deriveSetupRelyingParty,
+  normalizeAllowedOrigin,
+  normalizeBrandName,
+  normalizeRpId,
+  validateRpIdForIssuer,
+  AdminValidationError,
+} from '../admin/validate';
+import type { AdminStore, AppConfig, SmtpInput, WebauthnStore } from '../stores';
+import { WEBAUTHN_CHALLENGE_SECONDS, newChallenge, registrationOptions, verifyRegistrationCeremony, webauthnUserHandleText } from '../webauthn';
+import { REGISTER_INVALID, isUuid, parseRegistrationCredential, passkeyRecord, reportsNonDiscoverable } from './webauthn';
 import type { SessionDeps } from './session';
 
 export interface AdminDeps extends SessionDeps {
   adminStore: AdminStore;
+  webauthnStore: WebauthnStore;
   /** When set, /admin/setup also requires this token; production should always set it. */
   setupToken: string | null;
 }
 
-async function stateJson(adminStore: AdminStore): Promise<Record<string, unknown>> {
+/**
+ * The anonymous first-run projection: enough to decide whether the instance still needs its root
+ * user and to render the unauthenticated shell. The administrator's credentials and the SMTP
+ * fleet stay out of it — they belong to `/admin/config`, behind a token.
+ */
+async function bootstrapJson(adminStore: AdminStore): Promise<Record<string, unknown>> {
+  const config = await adminStore.readConfig();
+  return {
+    issuer: config.issuer,
+    rp_id: config.rpId,
+    brand_name: config.brandName,
+    brand_background_image: config.brandBackgroundImage,
+    admin_user_id: config.adminUserId,
+  };
+}
+
+/** The full administrator view of `/admin/config`. */
+async function configJson(adminStore: AdminStore): Promise<Record<string, unknown>> {
   const config = await adminStore.readConfig();
   const [adminEd25519, smtp] = await Promise.all([adminStore.firstAdminCredential(), adminStore.listSmtpSummaries()]);
   return {
@@ -41,63 +69,183 @@ async function stateJson(adminStore: AdminStore): Promise<Record<string, unknown
   };
 }
 
+/**
+ * `admin_setup_forbidden` means "already claimed", so a missing or wrong token needs its own code:
+ * the GUI keys the whole first-run flow off that distinction.
+ */
 function setupGuard(request: Request, deps: AdminDeps): Response | null {
   if (deps.setupToken === null) return null;
-  const presented = request.headers.get('x-admin-setup-token');
-  if (presented !== deps.setupToken) return errorResponse(403, 'admin_setup_forbidden');
+  if (request.headers.get('x-admin-setup-token') !== deps.setupToken) {
+    return errorResponse(403, 'admin_setup_token_required');
+  }
   return null;
 }
 
 /**
- * GET/PUT /admin/setup — first-run bootstrap.
+ * GET /admin/setup — the first-run probe.
  *
- * The legacy server gated this on loopback; a Worker has no loopback, so the gate is "no admin
- * exists yet" plus an optional shared token. Set ADMIN_SETUP_TOKEN in production: the window
- * between deploy and the owner claiming admin is otherwise open to anyone.
+ * The legacy server gated this on loopback; a Worker has no loopback, so the gate is "no root user
+ * yet" plus an optional shared token. Once the owner claims the instance it answers 403
+ * `admin_setup_forbidden`, which is the server reporting "already done" rather than a failure.
  */
 export async function handleAdminSetup(request: Request, deps: AdminDeps): Promise<Response> {
   const denied = setupGuard(request, deps);
   if (denied) return denied;
 
   const config = await deps.adminStore.readConfig();
-  if (request.method === 'GET') {
-    if (config.adminUserId !== null) return errorResponse(403, 'admin_setup_forbidden');
-    return jsonResponse(await stateJson(deps.adminStore));
-  }
+  if (config.adminUserId !== null) return errorResponse(403, 'admin_setup_forbidden');
+  return jsonResponse(await bootstrapJson(deps.adminStore));
+}
 
-  if (config.adminUserId !== null) return errorResponse(409, 'already_initialized');
+/**
+ * POST /admin/setup/passkey/options — the first half of the one-time claim.
+ *
+ * A registration challenge carries a foreign key to `users`, so the root user row is created here,
+ * before anything is verified. The claim itself waits for the credential: pointing
+ * `admin_user_id` at a user with no passkey would leave an instance nobody can sign in to.
+ *
+ * The relying party comes from the request URL, because a fresh database still says `localhost`
+ * and changing that needs the very token this endpoint exists to create.
+ */
+export async function handleAdminSetupPasskeyOptions(request: Request, deps: AdminDeps): Promise<Response> {
+  const denied = setupGuard(request, deps);
+  if (denied) return denied;
 
-  let name: string;
-  let publicKey: string;
+  const config = await deps.adminStore.readConfig();
+  if (config.adminUserId !== null) return errorResponse(403, 'admin_setup_forbidden');
+
   try {
-    const body = parseStrictJsonObject(await request.text());
-    rejectUnknownKeys(body, ['admin_ed25519']);
-    const credential = requireObject(body, 'admin_ed25519');
-    rejectUnknownKeys(credential, ['name', 'public_key']);
-    name = requireString(credential, 'name').trim();
-    publicKey = requireString(credential, 'public_key').trim();
-  } catch (error) {
-    if (error instanceof StrictJsonError) return errorResponse(400, 'invalid_request');
-    throw error;
-  }
-  if (name.length === 0) return errorResponse(400, 'invalid_request');
-
-  let keyBytes: Uint8Array;
-  try {
-    keyBytes = base58Decode(publicKey);
+    rejectUnknownKeys(parseStrictJsonObject(await request.text()), []);
   } catch {
     return errorResponse(400, 'invalid_request');
   }
-  if (keyBytes.length !== 32) return errorResponse(400, 'invalid_request');
 
+  const relyingParty = deriveSetupRelyingParty(request.url);
+  const rpName = config.brandName.trim();
+  if (relyingParty === null || rpName.length === 0) return errorResponse(400, 'invalid_setup_origin');
+
+  const userId = await deps.adminStore.ensureRootUser();
+  const userHandle = await webauthnUserHandleText(userId);
+  const challenge = newChallenge();
+  const requestId = uuidv4();
+  const now = deps.now.toISOString();
+  const expiresAt = new Date(deps.now.getTime() + WEBAUTHN_CHALLENGE_SECONDS * 1000).toISOString();
+
+  // One live claim challenge at a time, exactly like the authenticated registration route.
+  await deps.webauthnStore.expirePendingRegistrations(userId, now);
+  await deps.webauthnStore.insertChallenge({
+    requestId,
+    type: 'register',
+    stateJson: JSON.stringify({ challenge, user_handle: userHandle }),
+    userId,
+    expiresAt,
+    rpId: relyingParty.rpId,
+    rpName,
+    origin: relyingParty.issuer,
+    now,
+  });
+
+  return jsonResponse({
+    ...registrationOptions({ challenge, rpId: relyingParty.rpId, rpName, userHandle, userName: rpName }),
+    request_id: requestId,
+  });
+}
+
+/**
+ * PUT /admin/setup — the second half: verify the passkey ceremony, store the credential, and only
+ * then make that user the administrator. One-shot by construction: the `app_meta` update is
+ * conditional on `admin_user_id IS NULL`, so a concurrent claim loses instead of sharing the role.
+ */
+export async function handleAdminSetupPasskey(request: Request, deps: AdminDeps): Promise<Response> {
+  const denied = setupGuard(request, deps);
+  if (denied) return denied;
+
+  const config = await deps.adminStore.readConfig();
+  if (config.adminUserId !== null) return errorResponse(409, 'already_initialized');
+
+  let requestId: string;
+  let credential: RegistrationResponseJSON;
+  let declaredIssuer: string | null;
+  let declaredRpId: string | null;
   try {
-    await deps.adminStore.installAdminEd25519(name, publicKey, deps.now.toISOString());
-  } catch (error) {
-    if (error instanceof Error && error.message === 'public_key_taken') return errorResponse(400, 'invalid_request');
-    throw error;
+    const body = parseStrictJsonObject(await request.text());
+    rejectUnknownKeys(body, ['request_id', 'credential', 'issuer', 'rp_id']);
+    const parsedId = body['request_id'];
+    if (typeof parsedId !== 'string' || !isUuid(parsedId)) throw new StrictJsonError('invalid_field');
+    requestId = parsedId;
+    const parsedCredential = parseRegistrationCredential(body['credential']);
+    if (parsedCredential === null) throw new StrictJsonError('invalid_field');
+    credential = parsedCredential;
+    declaredIssuer = optionalString(body, 'issuer') ?? null;
+    declaredRpId = optionalString(body, 'rp_id') ?? null;
+  } catch {
+    return errorResponse(400, 'invalid_request');
   }
 
-  return jsonResponse(await stateJson(deps.adminStore));
+  const relyingParty = deriveSetupRelyingParty(request.url);
+  if (relyingParty === null) return errorResponse(400, 'invalid_setup_origin');
+  // The page shows the inferred origin and sends it back. A mismatch means a stale tab or another
+  // host, and silently claiming a relying party nobody confirmed would break every later ceremony.
+  if (
+    (declaredIssuer !== null && declaredIssuer !== relyingParty.issuer) ||
+    (declaredRpId !== null && declaredRpId !== relyingParty.rpId)
+  ) {
+    return errorResponse(400, 'invalid_request');
+  }
+
+  const now = deps.now.toISOString();
+  // A challenge issued for another origin must never complete here, or a claim could be replayed
+  // against a host it was not created for.
+  const challenge = await deps.webauthnStore.findChallenge(requestId, 'register');
+  if (
+    challenge === null ||
+    challenge.userId === null ||
+    challenge.consumedAt !== null ||
+    challenge.expiresAt <= now ||
+    challenge.origin !== relyingParty.issuer ||
+    challenge.rpId !== relyingParty.rpId
+  ) {
+    return errorResponse(400, REGISTER_INVALID);
+  }
+
+  if (reportsNonDiscoverable(credential.clientExtensionResults)) return errorResponse(400, REGISTER_INVALID);
+
+  let state: { challenge?: unknown; user_handle?: unknown };
+  try {
+    state = JSON.parse(challenge.stateJson) as { challenge?: unknown; user_handle?: unknown };
+  } catch {
+    return errorResponse(400, REGISTER_INVALID);
+  }
+  if (typeof state.challenge !== 'string' || typeof state.user_handle !== 'string') {
+    return errorResponse(400, REGISTER_INVALID);
+  }
+
+  const outcome = await verifyRegistrationCeremony({
+    response: credential,
+    challenge: state.challenge,
+    origin: challenge.origin,
+    rpId: challenge.rpId,
+  });
+  if (outcome === null) return errorResponse(400, REGISTER_INVALID);
+
+  const stored = await deps.webauthnStore.completeRegistration({
+    requestId,
+    credentialId: outcome.credentialId,
+    userId: challenge.userId,
+    passkeyJson: passkeyRecord(outcome, state.user_handle, challenge.rpId),
+    rpId: challenge.rpId,
+    firstOnly: true,
+    now,
+  });
+  if (!stored.consumed) return errorResponse(400, REGISTER_INVALID);
+  if (!stored.stored) return errorResponse(409, 'already_initialized');
+
+  // Claim last: `admin_user_id` on a user without a credential is an instance with no way in.
+  if (!(await deps.adminStore.claimRootUser(challenge.userId, relyingParty))) {
+    return errorResponse(409, 'already_initialized');
+  }
+
+  return jsonResponse({ ok: true });
 }
 
 function readSmtpInputs(value: unknown): SmtpInput[] | null {
@@ -155,7 +303,7 @@ export async function handleAdminConfig(request: Request, deps: AdminDeps): Prom
   if (!auth) return errorResponse(401, 'invalid_access_token');
   if (!(await deps.userStore.isAdmin(auth.userId))) return errorResponse(403, 'admin_required');
 
-  if (request.method === 'GET') return jsonResponse(await stateJson(deps.adminStore));
+  if (request.method === 'GET') return jsonResponse(await configJson(deps.adminStore));
 
   let issuer: string;
   let rpId: string;
@@ -195,5 +343,5 @@ export async function handleAdminConfig(request: Request, deps: AdminDeps): Prom
     }
   }
 
-  return jsonResponse(await stateJson(deps.adminStore));
+  return jsonResponse(await configJson(deps.adminStore));
 }

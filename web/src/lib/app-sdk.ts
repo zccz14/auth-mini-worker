@@ -1,5 +1,6 @@
 import type { AuthMiniApi } from 'auth-mini/sdk/browser';
 import type { MeResponse } from 'auth-mini/sdk/api';
+import { setupTokenHeaders } from '@/lib/setup-token';
 
 type Ed25519Api = {
   register(input: { name: string; public_key: string }): Promise<unknown>;
@@ -15,14 +16,18 @@ type Ed25519Api = {
   }): Promise<AppSessionTokens>;
 };
 
+/**
+ * `/admin/setup` answers with the first-run projection only; `admin_ed25519` and `smtp` come from
+ * `/admin/config`, which needs a token, so they are optional here rather than absent by accident.
+ */
 export type AdminSetupState = {
   issuer: string;
   rp_id: string;
   brand_name: string;
   brand_background_image: string;
   admin_user_id: string | null;
-  admin_ed25519: unknown | null;
-  smtp: null | Array<{
+  admin_ed25519?: unknown | null;
+  smtp?: null | Array<{
     id: number;
     host: string;
     port: number;
@@ -126,9 +131,14 @@ type AdminApi = {
   };
   setup: {
     fetch(): Promise<AdminSetupState>;
+    passkeyOptions(): Promise<SetupRegistrationOptions>;
+    /** Claims the instance: the credential, then the administrator, in that order. */
     initialize(input: {
-      admin_ed25519: { name: string; public_key: string };
-    }): Promise<AdminSetupState>;
+      request_id: string;
+      credential: Record<string, unknown>;
+      issuer: string;
+      rp_id: string;
+    }): Promise<{ ok: true }>;
   };
   config: {
     fetch(): Promise<AdminSetupState>;
@@ -195,6 +205,11 @@ export type AppSdk = AuthMiniApi & {
   authorizeSession(input: SessionAuthorizeInput): Promise<AppSessionTokens>;
 };
 
+export type SetupRegistrationOptions = {
+  request_id: string;
+  publicKey: import('@/lib/webauthn').RegistrationOptions;
+};
+
 export type AppSessionTokens = {
   session_id: string;
   access_token: string;
@@ -244,6 +259,7 @@ export function extendAppSdk(sdk: AuthMiniApi, serverBaseUrl: string): AppSdk {
     path: string,
     body: unknown,
     accessToken?: string | null,
+    extraHeaders: Record<string, string> = {},
   ) {
     const response = await fetch(new URL(path, serverBaseUrl), {
       method: 'POST',
@@ -251,6 +267,7 @@ export function extendAppSdk(sdk: AuthMiniApi, serverBaseUrl: string): AppSdk {
         accept: 'application/json',
         'content-type': 'application/json',
         ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+        ...extraHeaders,
       },
       body: JSON.stringify(body),
     });
@@ -267,11 +284,16 @@ export function extendAppSdk(sdk: AuthMiniApi, serverBaseUrl: string): AppSdk {
     return payload as T;
   }
 
-  async function getJson<T>(path: string, accessToken?: string | null) {
+  async function getJson<T>(
+    path: string,
+    accessToken?: string | null,
+    extraHeaders: Record<string, string> = {},
+  ) {
     const response = await fetch(new URL(path, serverBaseUrl), {
       headers: {
         accept: 'application/json',
         ...(accessToken ? { authorization: 'Bearer ' + accessToken } : {}),
+        ...extraHeaders,
       },
     });
     const payload = (await response.json()) as T | { error?: string };
@@ -286,6 +308,7 @@ export function extendAppSdk(sdk: AuthMiniApi, serverBaseUrl: string): AppSdk {
     path: string,
     body: unknown,
     accessToken?: string | null,
+    extraHeaders: Record<string, string> = {},
   ) {
     const response = await fetch(new URL(path, serverBaseUrl), {
       method: 'PUT',
@@ -293,6 +316,7 @@ export function extendAppSdk(sdk: AuthMiniApi, serverBaseUrl: string): AppSdk {
         accept: 'application/json',
         'content-type': 'application/json',
         ...(accessToken ? { authorization: 'Bearer ' + accessToken } : {}),
+        ...extraHeaders,
       },
       body: JSON.stringify(body),
     });
@@ -359,10 +383,23 @@ export function extendAppSdk(sdk: AuthMiniApi, serverBaseUrl: string): AppSdk {
       },
       setup: {
         fetch() {
-          return getJson<AdminSetupState>('/admin/setup');
+          return getJson<AdminSetupState>('/admin/setup', null, setupTokenHeaders());
+        },
+        passkeyOptions() {
+          return postJson<SetupRegistrationOptions>(
+            '/admin/setup/passkey/options',
+            {},
+            null,
+            setupTokenHeaders(),
+          );
         },
         initialize(input) {
-          return putJson<AdminSetupState>('/admin/setup', input);
+          return putJson<{ ok: true }>(
+            '/admin/setup',
+            input,
+            null,
+            setupTokenHeaders(),
+          );
         },
       },
       config: {

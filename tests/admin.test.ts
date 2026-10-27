@@ -5,11 +5,10 @@ import type { AdminDeps } from '../src/routes/admin';
 import { handleAdminConfig, handleAdminSetup } from '../src/routes/admin';
 import { mintSession } from '../src/session';
 import type { AdminCredentialSummary, AdminStore, AppConfig, SmtpInput, SmtpSummary } from '../src/stores';
-import { MemoryCredentialStore, MemoryKeyStore, MemorySessionStore, MemoryUserStore } from './doubles';
+import { MemoryCredentialStore, MemoryKeyStore, MemorySessionStore, MemoryUserStore, MemoryWebauthnStore } from './doubles';
 
 const NOW = new Date('2026-10-26T06:00:00.000Z');
 const ISSUER = 'https://auth.ntnl.io';
-const VALID_KEY = '1'.repeat(32);
 
 class MemoryAdminStore implements AdminStore {
   config: AppConfig = {
@@ -21,6 +20,7 @@ class MemoryAdminStore implements AdminStore {
   };
   smtp: Array<SmtpSummary & { password: string }> = [];
   adminCredential: AdminCredentialSummary | null = null;
+  pendingRootUser: string | null = null;
   private nextId = 1;
 
   async readConfig(): Promise<AppConfig> {
@@ -55,9 +55,15 @@ class MemoryAdminStore implements AdminStore {
     return this.adminCredential;
   }
 
-  async installAdminEd25519(name: string, publicKey: string, now: string): Promise<void> {
-    this.config.adminUserId = this.config.adminUserId ?? 'admin-user';
-    this.adminCredential = { id: 'cred-1', name, public_key: publicKey, last_used_at: null, created_at: now };
+  async ensureRootUser(): Promise<string> {
+    this.pendingRootUser = this.pendingRootUser ?? 'root-user';
+    return this.pendingRootUser;
+  }
+
+  async claimRootUser(userId: string, relyingParty: { issuer: string; rpId: string }): Promise<boolean> {
+    if (this.config.adminUserId !== null) return false;
+    this.config = { ...this.config, adminUserId: userId, issuer: relyingParty.issuer, rpId: relyingParty.rpId };
+    return true;
   }
 }
 
@@ -78,6 +84,7 @@ async function harness(options: { admin?: boolean; setupToken?: string | null } 
     credentialStore: new MemoryCredentialStore(),
     now: NOW,
     adminStore,
+    webauthnStore: new MemoryWebauthnStore(),
     setupToken: options.setupToken ?? null,
   };
 
@@ -132,42 +139,43 @@ describe('admin validation', () => {
   });
 });
 
-describe('GET/PUT /admin/setup', () => {
-  it('reports the uninitialised state and installs the admin key once', async () => {
-    const { deps, adminStore } = await harness();
-    const before = await handleAdminSetup(request('GET'), deps);
-    expect(before.status).toBe(200);
-    expect(await before.json()).toMatchObject({ admin_user_id: null, admin_ed25519: null, smtp: null });
-
-    const installed = await handleAdminSetup(request('PUT', { admin_ed25519: { name: 'ops laptop', public_key: VALID_KEY } }), deps);
-    expect(installed.status).toBe(200);
-    const state = (await installed.json()) as Record<string, unknown>;
-    expect(state['admin_user_id']).toBe('admin-user');
-    expect(state['admin_ed25519']).toMatchObject({ name: 'ops laptop', public_key: VALID_KEY });
-    expect(adminStore.adminCredential?.created_at).toBe(NOW.toISOString());
-
-    const second = await handleAdminSetup(request('PUT', { admin_ed25519: { name: 'again', public_key: VALID_KEY } }), deps);
-    expect(second.status).toBe(409);
-    expect(await second.json()).toEqual({ error: 'already_initialized' });
-    expect((await handleAdminSetup(request('GET'), deps)).status).toBe(403);
-  });
-
-  it('rejects keys that are not 32 base58 bytes and bodies with extra fields', async () => {
+describe('GET /admin/setup', () => {
+  it('answers with the first-run projection only', async () => {
     const { deps } = await harness();
-    expect((await handleAdminSetup(request('PUT', { admin_ed25519: { name: 'x', public_key: 'not base58!' } }), deps)).status).toBe(400);
-    expect((await handleAdminSetup(request('PUT', { admin_ed25519: { name: 'x', public_key: 'abc' } }), deps)).status).toBe(400);
-    expect((await handleAdminSetup(request('PUT', { admin_ed25519: { name: 'x', public_key: VALID_KEY, extra: 1 } }), deps)).status).toBe(400);
-    expect((await handleAdminSetup(request('PUT', { admin_ed25519: { name: '  ', public_key: VALID_KEY } }), deps)).status).toBe(400);
+    const response = await handleAdminSetup(request('GET'), deps);
+    expect(response.status).toBe(200);
+
+    // An anonymous caller learns whether the instance still needs its root user and what the
+    // unauthenticated shell renders. The administrator's credentials and the SMTP fleet are
+    // `/admin/config`, behind a token.
+    expect(await response.json()).toEqual({
+      admin_user_id: null,
+      issuer: 'http://localhost:7777',
+      rp_id: 'localhost',
+      brand_name: 'auth-mini',
+      brand_background_image: '',
+    });
   });
 
-  it('honours the setup token when one is configured', async () => {
-    const { deps } = await harness({ setupToken: 'shhh' });
-    expect((await handleAdminSetup(request('PUT', { admin_ed25519: { name: 'x', public_key: VALID_KEY } }), deps)).status).toBe(403);
+  it('refuses once the root user is claimed', async () => {
+    const { deps, adminStore } = await harness();
+    await adminStore.claimRootUser('root-user', { issuer: ISSUER, rpId: 'auth.ntnl.io' });
 
-    const allowed = await handleAdminSetup(
-      request('PUT', { admin_ed25519: { name: 'x', public_key: VALID_KEY } }, undefined, { 'x-admin-setup-token': 'shhh' }),
-      deps,
-    );
+    const response = await handleAdminSetup(request('GET'), deps);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'admin_setup_forbidden' });
+  });
+
+  it('separates a missing setup token from an already-claimed instance', async () => {
+    const { deps } = await harness({ setupToken: 'shhh' });
+
+    // A wrong token is not "already initialized": the GUI has to be able to tell the owner to
+    // paste the token instead of hiding the first-run page forever.
+    const denied = await handleAdminSetup(request('GET'), deps);
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: 'admin_setup_token_required' });
+
+    const allowed = await handleAdminSetup(request('GET', undefined, undefined, { 'x-admin-setup-token': 'shhh' }), deps);
     expect(allowed.status).toBe(200);
   });
 });

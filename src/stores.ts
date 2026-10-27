@@ -115,8 +115,20 @@ export interface AdminStore {
   /** Full replace, exactly like `replace_smtp_configs`: ids not present are deleted. */
   replaceSmtp(inputs: readonly SmtpInput[]): Promise<void>;
   firstAdminCredential(): Promise<AdminCredentialSummary | null>;
-  /** Creates the admin user (no email) if missing, then attaches the Ed25519 key. */
-  installAdminEd25519(name: string, publicKey: string, now: string): Promise<void>;
+  /**
+   * Returns the not-yet-claimed root user, creating one when the instance has none.
+   *
+   * A registration challenge holds a foreign key to `users` and cannot be anonymous, so the row
+   * has to exist before the ceremony starts — the claim itself only happens once the credential
+   * has been verified. Reusing an abandoned attempt keeps ghost accounts out of the directory.
+   */
+  ensureRootUser(): Promise<string>;
+  /**
+   * Points `app_meta.admin_user_id` at the root user and records the origin its passkeys belong
+   * to. False when somebody else claimed the instance first; the caller must not report success,
+   * because a second administrator cannot be created this way and the loser's credential is inert.
+   */
+  claimRootUser(userId: string, relyingParty: { issuer: string; rpId: string }): Promise<boolean>;
 }
 
 export interface Ed25519CredentialRow {

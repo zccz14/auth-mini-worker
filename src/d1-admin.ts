@@ -125,34 +125,38 @@ export class D1AdminStore implements AdminStore {
     return row ?? null;
   }
 
-  async installAdminEd25519(name: string, publicKey: string, now: string): Promise<void> {
+  async ensureRootUser(): Promise<string> {
     await this.ensureAppRow();
-    const config = await this.readConfig();
+    // An unclaimed instance has at most one "root user without a credential" — the leftover of an
+    // abandoned attempt. Reusing it keeps `users` clean; the `admin_user_id` exclusion matters
+    // because the claimed root user itself never has an email.
+    const pending = await this.db
+      .prepare(
+        `SELECT u.id FROM users u
+          WHERE u.email IS NULL
+            AND u.id <> COALESCE((SELECT admin_user_id FROM app_meta WHERE id = 'APP'), '')
+            AND NOT EXISTS (SELECT 1 FROM webauthn_credentials c WHERE c.user_id = u.id)
+            AND NOT EXISTS (SELECT 1 FROM ed25519_credentials e WHERE e.user_id = u.id)
+          ORDER BY u.created_at ASC, u.id ASC
+          LIMIT 1`,
+      )
+      .first<{ id: string }>();
+    if (pending !== null) return pending.id;
 
-    let userId = config.adminUserId;
-    if (userId === null) {
-      userId = uuidv4();
-      await this.db.prepare('INSERT INTO users (id, email) VALUES (?1, NULL)').bind(userId).run();
-      await this.db.prepare("UPDATE app_meta SET admin_user_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 'APP'").bind(userId).run();
-    }
+    const id = uuidv4();
+    await this.db.prepare('INSERT INTO users (id, email) VALUES (?1, NULL)').bind(id).run();
+    return id;
+  }
 
-    const owned = await this.db
-      .prepare('SELECT id FROM ed25519_credentials WHERE public_key = ?1 LIMIT 1')
-      .bind(publicKey)
-      .first<{ id: string; user_id: string }>();
-    if (owned) {
-      const owner = await this.db
-        .prepare('SELECT user_id FROM ed25519_credentials WHERE id = ?1 LIMIT 1')
-        .bind(owned.id)
-        .first<{ user_id: string }>();
-      if (owner?.user_id !== userId) throw new Error('public_key_taken');
-      await this.db.prepare('UPDATE ed25519_credentials SET name = ?1 WHERE id = ?2').bind(name, owned.id).run();
-      return;
-    }
-
-    await this.db
-      .prepare('INSERT INTO ed25519_credentials (id, user_id, name, public_key, created_at) VALUES (?1, ?2, ?3, ?4, ?5)')
-      .bind(uuidv4(), userId, name, publicKey, now)
+  async claimRootUser(userId: string, relyingParty: { issuer: string; rpId: string }): Promise<boolean> {
+    await this.ensureAppRow();
+    const result = await this.db
+      .prepare(
+        `UPDATE app_meta SET admin_user_id = ?1, issuer = ?2, rp_id = ?3, updated_at = CURRENT_TIMESTAMP
+         WHERE id = 'APP' AND admin_user_id IS NULL`,
+      )
+      .bind(userId, relyingParty.issuer, relyingParty.rpId)
       .run();
+    return (result.meta?.changes ?? 0) > 0;
   }
 }
