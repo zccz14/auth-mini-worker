@@ -144,7 +144,6 @@ function pageTitle(pathname: string, t: ReturnType<typeof useI18n>['t']) {
   if (pathname === '/admin') return t('admin.overview');
   if (pathname === '/admin/configuration') return t('admin.configuration');
   if (pathname === '/admin/jwks') return t('admin.jwks');
-  if (pathname === '/admin/resources') return t('admin.resourcesTitle');
   if (pathname === '/admin/request-audit') return t('admin.requestAudit');
   if (pathname === '/admin/users') return t('admin.users');
   return t('shell.overview');
@@ -315,12 +314,6 @@ export function AppShell() {
                   label={t('admin.overview')}
                   onNavigate={closeMobile}
                   to="/admin"
-                />
-                <SidebarLink
-                  icon="sessions"
-                  label={t('admin.resourcesTitle')}
-                  onNavigate={closeMobile}
-                  to="/admin/resources"
                 />
                 <SidebarLink
                   icon="audit"

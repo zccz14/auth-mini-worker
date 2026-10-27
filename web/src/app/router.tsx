@@ -5,7 +5,6 @@ import { AdminRoute } from '@/routes/admin';
 import { AdminConfigurationRoute } from '@/routes/admin-configuration';
 import { AdminJwksRoute } from '@/routes/admin-jwks';
 import { AdminRequestAuditRoute } from '@/routes/admin-request-audit';
-import { AdminResourcesRoute } from '@/routes/admin-resources';
 import { AdminUsersRoute } from '@/routes/admin-users';
 import { HomeRoute } from '@/routes/home';
 import { OverviewRoute } from '@/routes/overview';
@@ -52,7 +51,6 @@ export function AppRouter() {
                 element={<AdminConfigurationRoute />}
               />
               <Route path="jwks" element={<AdminJwksRoute />} />
-              <Route path="resources" element={<AdminResourcesRoute />} />
               <Route
                 path="request-audit"
                 element={<AdminRequestAuditRoute />}
