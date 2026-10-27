@@ -108,14 +108,21 @@ afterEach(() => {
 
 describe('formal GUI routes', () => {
   it('renders the dedicated initialization page', () => {
-    renderRoute(<SetupRoute />);
+    renderRoute(
+      <MemoryRouter initialEntries={['/initialize']}>
+        <SetupRoute />
+      </MemoryRouter>,
+    );
 
     expect(
       screen.getByRole('heading', { name: 'Initialize auth-mini' }),
     ).toBeInTheDocument();
+    // The claim is a passkey registration, and the relying party is read from the address bar.
     expect(
-      screen.getByRole('button', { name: 'Generate ED25519 key' }),
+      screen.getByRole('button', { name: 'Initialize with a passkey' }),
     ).toBeInTheDocument();
+    expect(screen.getByText(window.location.hostname)).toBeInTheDocument();
+    expect(screen.getByLabelText('Setup token')).toBeInTheDocument();
   });
 
   it('renders the dedicated login page with all sign-in methods', () => {

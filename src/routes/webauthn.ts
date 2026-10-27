@@ -8,6 +8,7 @@ import { errorResponse, jsonResponse } from '../http/response';
 import { StrictJsonError, optionalString, parseStrictJsonObject, rejectUnknownKeys } from '../http/strict-json';
 import { mintSession, tokenJson } from '../session';
 import type { AdminStore, UserStore, WebauthnStore } from '../stores';
+import type { RegistrationOutcome } from '../webauthn';
 import {
   WEBAUTHN_CHALLENGE_SECONDS,
   authenticationOptions,
@@ -31,10 +32,10 @@ export interface WebauthnDeps extends SessionDeps {
   userAgent: string | null;
 }
 
-const REGISTER_INVALID = 'invalid_webauthn_registration';
+export const REGISTER_INVALID = 'invalid_webauthn_registration';
 const AUTHENTICATE_INVALID = 'invalid_webauthn_authentication';
 
-function isUuid(value: string): boolean {
+export function isUuid(value: string): boolean {
   if (value.length !== 36) return false;
   for (let index = 0; index < 36; index += 1) {
     const char = value[index]!;
@@ -67,7 +68,7 @@ function transportsField(value: unknown): string[] | undefined | null {
  * `#[serde(deny_unknown_fields)]` reaches into the nested credential objects too, so every level
  * gets checked here. A browser that grows a new field fails closed instead of being half-read.
  */
-function parseRegistrationCredential(raw: unknown): RegistrationResponseJSON | null {
+export function parseRegistrationCredential(raw: unknown): RegistrationResponseJSON | null {
   const credential = asObject(raw);
   if (credential === null) return null;
   try {
@@ -167,9 +168,30 @@ function parseAuthenticationCredential(raw: unknown): AuthenticationResponseJSON
 }
 
 /** `credProps.rk === false` means the authenticator told us the credential is not discoverable. */
-function reportsNonDiscoverable(extensionResults: unknown): boolean {
+export function reportsNonDiscoverable(extensionResults: unknown): boolean {
   const props = asObject(asObject(extensionResults)?.['credProps']);
   return props?.['rk'] === false;
+}
+
+/**
+ * The stored credential record, shared with the first-run claim so both registration paths write
+ * exactly one format. `parsePasskey` reads it back at authentication time.
+ */
+export function passkeyRecord(
+  outcome: RegistrationOutcome,
+  userHandle: string,
+  rpId: string,
+): string {
+  return serializePasskey({
+    format: 'auth-mini-passkey',
+    version: 1,
+    id: outcome.credentialId,
+    public_key: b64urlEncode(outcome.publicKey),
+    counter: outcome.counter,
+    transports: outcome.transports,
+    user_handle: userHandle,
+    rp_id: rpId,
+  });
 }
 
 /**
@@ -293,16 +315,7 @@ export async function handleWebauthnRegisterVerify(request: Request, deps: Webau
     return errorResponse(403, 'insufficient_authentication_method');
   }
 
-  const passkeyJson = serializePasskey({
-    format: 'auth-mini-passkey',
-    version: 1,
-    id: outcome.credentialId,
-    public_key: b64urlEncode(outcome.publicKey),
-    counter: outcome.counter,
-    transports: outcome.transports,
-    user_handle: state.user_handle,
-    rp_id: challenge.rpId,
-  });
+  const passkeyJson = passkeyRecord(outcome, state.user_handle, challenge.rpId);
 
   const stored = await deps.webauthnStore.completeRegistration({
     requestId,

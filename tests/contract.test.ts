@@ -19,8 +19,12 @@ function matches(template: string, path: string): boolean {
 }
 
 describe('openapi contract', () => {
-  it('vendors the full legacy surface', () => {
-    expect(Object.keys(spec.paths)).toHaveLength(36);
+  it('vendors the full legacy surface plus the one deliberate addition', () => {
+    // 36 paths are the legacy surface, byte for byte. `POST /admin/setup/passkey/options` is the
+    // one addition: the first-run claim registers a passkey instead of importing an Ed25519 key,
+    // and a ceremony needs a challenge issued before the credential exists. Recorded in
+    // docs/COMPATIBILITY.md.
+    expect(Object.keys(spec.paths)).toHaveLength(37);
   });
 
   it('implements no route the contract does not define', () => {

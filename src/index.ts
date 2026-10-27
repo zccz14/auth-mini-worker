@@ -49,7 +49,14 @@ import {
   handleEd25519Start,
   handleEd25519Verify,
 } from './routes/ed25519';
-import { handleAdminConfig, handleAdminJwks, handleAdminJwksRotate, handleAdminSetup } from './routes/admin';
+import {
+  handleAdminConfig,
+  handleAdminJwks,
+  handleAdminJwksRotate,
+  handleAdminSetup,
+  handleAdminSetupPasskey,
+  handleAdminSetupPasskeyOptions,
+} from './routes/admin';
 import type { SessionDeps } from './routes/session';
 import { handleMe, handleSessionLogout, handleSessionRefresh, handleTime } from './routes/session';
 import { handleJwks } from './routes/jwks';
@@ -134,6 +141,7 @@ async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
   return {
     ...(await sessionDeps(request, env)),
     adminStore: new D1AdminStore(env.DB),
+    webauthnStore: new D1WebauthnStore(env.DB),
     setupToken: env.ADMIN_SETUP_TOKEN ?? null,
   };
 }
@@ -165,7 +173,10 @@ const routes: Route[] = [
   route('GET', '/me', async (request, env) => handleMe(request, await sessionDeps(request, env))),
   route('GET', '/time', async () => handleTime(new Date())),
   route('GET', '/admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))),
-  route('PUT', '/admin/setup', async (request, env) => handleAdminSetup(request, await adminDeps(request, env))),
+  route('PUT', '/admin/setup', async (request, env) => handleAdminSetupPasskey(request, await adminDeps(request, env))),
+  route('POST', '/admin/setup/passkey/options', async (request, env) =>
+    handleAdminSetupPasskeyOptions(request, await adminDeps(request, env)),
+  ),
   route('GET', '/admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))),
   route('PUT', '/admin/config', async (request, env) => handleAdminConfig(request, await adminDeps(request, env))),
   route('GET', '/admin/users', async (request, env) => handleAdminUsers(request, await directoryDeps(request, env))),

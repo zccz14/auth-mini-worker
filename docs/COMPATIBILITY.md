@@ -247,10 +247,18 @@ These are deliberate, or need confirming against the legacy test suite before cu
    discoverable credential always returns it, so this only rejects a credential presented under
    someone else's handle.
 10. **`GET /admin/setup` after the claim** → `403 admin_setup_forbidden`, where production legacy
-    answers `200` with admin/SMTP metadata. Deliberate; see **Admin bootstrap**.
+    answers `200` with admin/SMTP metadata. The anonymous payload is narrowed in the same spirit:
+    it carries the first-run projection and never the administrator's credentials or the SMTP
+    rows. Deliberate; see **Admin bootstrap**.
 11. **First-passkey race** → the batch spends the challenge and then refuses the insert, where the
     legacy transaction rolled back both. Reachable only when two ceremonies for one user run
     concurrently; it fails closed and costs that user one retry.
+12. **The claim registers a passkey** → `PUT /admin/setup` no longer imports an Ed25519 key: it
+    completes a WebAuthn registration started by `POST /admin/setup/passkey/options`, the one path
+    this Worker has that the vendored spec did not. The relying party is derived from the request
+    origin instead of being read from `app_meta`, which a fresh database still fills with
+    `localhost` — and correcting that needs the administrator the claim creates. See **Admin
+    bootstrap**.
 
 ## Runtime budget: no paid plan assumed
 
@@ -396,8 +404,35 @@ served the promoted pair with the old CURRENT gone.
 
 ## Admin bootstrap
 
-`PUT /admin/setup` installs the first admin Ed25519 key and the user row that owns it; a second
-call answers `409 already_initialized`, and `GET /admin/setup` answers `403` once an admin exists.
+The first-run window does exactly one thing: create the root user. `POST
+/admin/setup/passkey/options` creates that user row — a registration challenge holds a foreign key
+to `users`, so it cannot be anonymous — and returns a discoverable-credential challenge; `PUT
+/admin/setup` verifies the ceremony, stores the passkey, and only then points
+`app_meta.admin_user_id` at that user. Writing the pointer first would leave an instance whose
+administrator has no credential, which is an instance with no way in. A second `PUT` answers `409
+already_initialized` and `GET /admin/setup` answers `403` once the claim is done.
+
+The relying party is read from the request origin — `issuer` is the scheme plus host the browser
+reached, `rp_id` its hostname — and written to `app_meta` in the same statement as the claim. It has
+to come from there: a fresh database says `localhost`, and changing that is `PUT /admin/config`,
+which needs the administrator token that does not exist yet. Only `localhost` and real DNS names are
+accepted; an IP literal or a single-label host answers `400 invalid_setup_origin`, because WebAuthn
+pins `rp_id` to the origin for the life of every credential and a claim made on the wrong host
+cannot be undone without a token. The page displays both values before the owner confirms, sends
+them back, and the server refuses a mismatch instead of claiming a relying party nobody looked at.
+
+After a successful claim the page signs in with the passkey it just registered, so the owner lands
+inside the console rather than on a login form. On a database that never had an Ed25519
+administrator, `admin_ed25519` in `GET /admin/config` is `null`; the field stays for the imported
+instances that still have one.
+
+Two consequences for the anonymous payload. `GET /admin/setup` answers with the first-run
+projection only — `issuer`, `rp_id`, `brand_name`, `brand_background_image`, `admin_user_id` — and
+drops `admin_ed25519` and `smtp`, which were never anything an unauthenticated caller should see.
+And a missing or wrong `X-Admin-Setup-Token` answers `403 admin_setup_token_required` instead of
+`admin_setup_forbidden`: the GUI keys the whole first-run flow off that distinction, and conflating
+the two hid the setup page forever once a token was configured. The page carries a token field,
+kept in `sessionStorage` for the tab doing the claim and never sent anywhere else.
 
 **Divergence (deliberate, decided 2026-10-27):** the legacy server gated setup on the caller
 being on loopback. A Worker has no loopback, so the gate here is "no admin exists yet" plus an
