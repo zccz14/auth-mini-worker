@@ -12,7 +12,8 @@ import {
   validateRpIdForIssuer,
   AdminValidationError,
 } from '../admin/validate';
-import type { AdminStore, AppConfig, SmtpInput, WebauthnStore } from '../stores';
+import type { AdminStore, AppConfig, RequestStatsStore, SmtpInput, WebauthnStore } from '../stores';
+import { readRequestAudit } from '../stats';
 import { WEBAUTHN_CHALLENGE_SECONDS, newChallenge, registrationOptions, verifyRegistrationCeremony, webauthnUserHandleText } from '../webauthn';
 import { REGISTER_INVALID, isUuid, parseRegistrationCredential, passkeyRecord, reportsNonDiscoverable } from './webauthn';
 import type { SessionDeps } from './session';
@@ -20,6 +21,7 @@ import type { SessionDeps } from './session';
 export interface AdminDeps extends SessionDeps {
   adminStore: AdminStore;
   webauthnStore: WebauthnStore;
+  requestStatsStore: RequestStatsStore;
   /** When set, /admin/setup also requires this token; production should always set it. */
   setupToken: string | null;
 }
@@ -281,6 +283,20 @@ async function requireAdmin(request: Request, deps: AdminDeps): Promise<Response
   if (!auth) return errorResponse(401, 'invalid_access_token');
   if (!(await deps.userStore.isAdmin(auth.userId))) return errorResponse(403, 'admin_required');
   return null;
+}
+
+/**
+ * GET /admin/request-audit — what this instance actually serves, and what strangers ask it for.
+ *
+ * The counters come from D1, not from a process: `started_at` is the start of a fixed window
+ * (24 h), not the moment a server booted. Beyond the legacy columns the payload carries
+ * `error_count` and `mean_ms` per endpoint and `window_seconds` — the numbers an outside reader
+ * needs to tell "busy" from "broken".
+ */
+export async function handleAdminRequestAudit(request: Request, deps: AdminDeps): Promise<Response> {
+  const denied = await requireAdmin(request, deps);
+  if (denied) return denied;
+  return jsonResponse(await readRequestAudit(deps.requestStatsStore, deps.now));
 }
 
 /** GET /admin/jwks — CURRENT and STANDBY public material. */

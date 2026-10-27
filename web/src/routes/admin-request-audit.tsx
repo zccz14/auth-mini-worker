@@ -104,6 +104,12 @@ export function AdminRequestAuditRoute() {
                     <th className="p-2 text-right">
                       {t('admin.requestCount')}
                     </th>
+                    <th className="p-2 text-right">
+                      {t('admin.requestErrors')}
+                    </th>
+                    <th className="p-2 text-right">
+                      {t('admin.requestMeanMs')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -116,6 +122,12 @@ export function AdminRequestAuditRoute() {
                       <td className="p-2 font-mono">{entry.endpoint}</td>
                       <td className="p-2 text-right tabular-nums">
                         {entry.count}
+                      </td>
+                      <td className="p-2 text-right tabular-nums">
+                        {entry.error_count}
+                      </td>
+                      <td className="p-2 text-right tabular-nums">
+                        {entry.mean_ms}
                       </td>
                     </tr>
                   ))}

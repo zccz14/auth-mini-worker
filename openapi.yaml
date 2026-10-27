@@ -394,10 +394,16 @@ paths:
       tags:
         - admin
       operationId: getAdminRequestAudit
-      summary: Read in-memory endpoint access counts and unknown endpoint requests
+      summary: Read per-endpoint access counts and unknown-path requests for the last 24 hours
+      description: >-
+        The legacy server counted in process memory and reported "since start". A Worker has no
+        uptime to count from, so the counters are persisted in D1 and the window is fixed at
+        24 hours (`window_seconds`). Beyond the legacy columns each endpoint carries
+        `error_count` and `mean_ms`, which is what tells "busy" apart from "broken". Counters age
+        out after 30 days; unknown paths after 7.
       responses:
         '200':
-          description: Access counts per API endpoint and unmatched request summaries since the server started
+          description: Access counts per API endpoint and unmatched request summaries for the window
           content:
             application/json:
               schema:
@@ -1577,12 +1583,16 @@ components:
       additionalProperties: false
       required:
         - started_at
+        - window_seconds
         - endpoints
         - unmatched
       properties:
         started_at:
           type: integer
-          description: Unix timestamp in seconds when request counting started
+          description: Unix timestamp in seconds at which the counting window starts
+        window_seconds:
+          type: integer
+          description: Length of the counting window; fixed at 86400 because a Worker has no uptime
         endpoints:
           type: array
           items:
@@ -1601,6 +1611,8 @@ components:
         - method
         - endpoint
         - count
+        - error_count
+        - mean_ms
       properties:
         method:
           type: string
@@ -1610,6 +1622,14 @@ components:
         count:
           type: integer
           minimum: 0
+        error_count:
+          type: integer
+          minimum: 0
+          description: How many of `count` answered 4xx or 5xx
+        mean_ms:
+          type: integer
+          minimum: 0
+          description: Mean wall-clock time of the requests inside the window
     UnmatchedRequest:
       type: object
       additionalProperties: false

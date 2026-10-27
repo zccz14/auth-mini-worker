@@ -26,9 +26,10 @@ describe('admin request audit route', () => {
   it('renders per-endpoint access counts', async () => {
     sdk.admin.requestAudit.fetch.mockResolvedValue({
       started_at: 1_784_200_000,
+      window_seconds: 86_400,
       endpoints: [
-        { method: 'POST', endpoint: '/email/start', count: 12 },
-        { method: 'GET', endpoint: '/jwks', count: 3 },
+        { method: 'POST', endpoint: '/email/start', count: 12, error_count: 2, mean_ms: 31 },
+        { method: 'GET', endpoint: '/jwks', count: 3, error_count: 0, mean_ms: 1 },
       ],
       unmatched: [
         {
@@ -46,7 +47,11 @@ describe('admin request audit route', () => {
     expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.getByText('/jwks')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
-    expect(screen.getByText(/Counting since/)).toBeInTheDocument();
+    expect(screen.getByText(/Window starts/)).toBeInTheDocument();
+    // The window is fixed, so errors and latency travel with each endpoint.
+    expect(screen.getByText('Errors')).toBeInTheDocument();
+    expect(screen.getByText('31')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
 
     expect(screen.getByText('Unknown endpoints')).toBeInTheDocument();
     expect(screen.getByText('/wp-login.php')).toBeInTheDocument();
@@ -56,6 +61,7 @@ describe('admin request audit route', () => {
   it('shows an empty state before any endpoint is accessed', async () => {
     sdk.admin.requestAudit.fetch.mockResolvedValue({
       started_at: 1_784_200_000,
+      window_seconds: 86_400,
       endpoints: [],
       unmatched: [],
     });

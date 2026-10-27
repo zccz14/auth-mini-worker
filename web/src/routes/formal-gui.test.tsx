@@ -15,7 +15,6 @@ const sdk = {
     databaseUrl: () => 'https://auth.example.com/admin/database',
     jwks: { list: vi.fn(), rotate: vi.fn() },
     requestAudit: { fetch: vi.fn() },
-    resources: { fetch: vi.fn() },
     setup: { fetch: vi.fn(), initialize: vi.fn() },
     users: vi.fn(),
     directoryToken: {
@@ -347,46 +346,12 @@ describe('formal GUI routes', () => {
         },
       ],
     });
-    sdk.admin.resources.fetch.mockResolvedValue({
-      sampled_at: 1_784_200_000,
-      sample_interval_ms: 5_000,
-      cpu: { usage_percent: 12.5, load_1m: 0.42, logical_cpus: 4 },
-      memory: {
-        used_bytes: 1_073_741_824,
-        total_bytes: 2_147_483_648,
-        available_bytes: 1_073_741_824,
-        process_used_bytes: 67_108_864,
-        other_used_bytes: 1_006_632_960,
-        usage_percent: 50,
-        swap_used_bytes: 0,
-        swap_total_bytes: 0,
-      },
-      network: {
-        receive_bytes_per_second: 1_024,
-        transmit_bytes_per_second: 2_048,
-        interfaces: 2,
-      },
-      disk: {
-        mount_point: '/',
-        used_bytes: 4_294_967_296,
-        total_bytes: 8_589_934_592,
-        available_bytes: 4_294_967_296,
-        usage_percent: 50,
-      },
-      sqlite: {
-        main_bytes: 1_024,
-        wal_bytes: 512,
-        shm_bytes: 128,
-        total_bytes: 1_664,
-        freelist_bytes: 256,
-        freelist_percent: 10,
-      },
-    });
     sdk.admin.requestAudit.fetch.mockResolvedValue({
       started_at: 1_784_200_000,
+      window_seconds: 86_400,
       endpoints: [
-        { method: 'POST', endpoint: '/email/start', count: 12 },
-        { method: 'GET', endpoint: '/jwks', count: 3 },
+        { method: 'POST', endpoint: '/email/start', count: 12, error_count: 2, mean_ms: 31 },
+        { method: 'GET', endpoint: '/jwks', count: 3, error_count: 0, mean_ms: 2 },
       ],
       unmatched: [
         {
@@ -399,8 +364,6 @@ describe('formal GUI routes', () => {
     });
     const user = userEvent.setup();
 
-    const setInterval = vi.spyOn(window, 'setInterval');
-    const clearInterval = vi.spyOn(window, 'clearInterval');
     render(
       <MemoryRouter initialEntries={['/admin']}>
         <AppRouter />
@@ -416,33 +379,15 @@ describe('formal GUI routes', () => {
     expect(sdk.admin.config.fetch).toHaveBeenCalledTimes(1);
     expect(sdk.admin.jwks.list).not.toHaveBeenCalled();
     expect(sdk.admin.users).not.toHaveBeenCalled();
-    expect(sdk.admin.resources.fetch).not.toHaveBeenCalled();
     expect(sdk.admin.requestAudit.fetch).not.toHaveBeenCalled();
     expect(
       screen.queryByRole('button', { name: 'Save configuration' }),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('link', { name: 'System resources' }));
-    expect(
-      await screen.findByText('Auth Mini RSS: 64 MiB', { exact: false }),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText('Current location')).toHaveTextContent(
-      '/admin/resources',
-    );
-    expect(sdk.admin.config.fetch).toHaveBeenCalledTimes(1);
-    expect(sdk.admin.jwks.list).not.toHaveBeenCalled();
-    expect(sdk.admin.users).not.toHaveBeenCalled();
-    expect(sdk.admin.requestAudit.fetch).not.toHaveBeenCalled();
-    const resourceInterval = setInterval.mock.results[0].value;
-
     await user.click(screen.getByRole('link', { name: 'Configuration' }));
     await waitFor(() =>
       expect(screen.getByLabelText('Brand name')).toHaveValue('auth-mini'),
     );
-    expect(clearInterval).toHaveBeenCalledWith(resourceInterval);
-    expect(
-      screen.queryByRole('heading', { name: 'System resources' }),
-    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'JWK Rotate' }),
     ).not.toBeInTheDocument();
@@ -572,9 +517,6 @@ describe('formal GUI routes', () => {
         'Service unavailable',
       );
       expect(screen.queryByRole('status')).not.toBeInTheDocument();
-      expect(
-        screen.queryByRole('heading', { name: 'System resources' }),
-      ).not.toBeInTheDocument();
       expect(
         screen.queryByRole('button', { name: 'Save configuration' }),
       ).not.toBeInTheDocument();

@@ -193,16 +193,18 @@ reimplementation — served by this Worker under `/web/` through the Static Asse
 spec the generated client came from, with one deliberate addition (`POST
 /admin/setup/passkey/options`), so the two cannot drift silently.
 
-Two screens call endpoints this Worker does not implement, so they fail at runtime while the rest
-of the console works:
+`/admin/resources` was **removed from the console** on 2026-10-27. The legacy screen reported host
+CPU, load average, memory, swap, network interfaces and SQLite file sizes; a Worker has none of
+those objects — CPU time is per request, memory is per isolate, there is no disk, and D1 is not a
+file. Keeping the page only produced "system resources are unavailable", so route, navigation
+entry, component and translations are gone and `GET /admin/resources` stays unimplemented and
+unreachable. The real numbers live in the Cloudflare dashboard (`wrangler d1 info`,
+`wrangler tail`) and are not proxied into the app.
 
-| Screen | Endpoint | State |
-|---|---|---|
-| `/admin/resources` | `GET /admin/resources` | never implemented (deliberate deviation) |
-| `/admin/request-audit` | `GET /admin/request-audit` | never implemented (deliberate deviation) |
+`/admin/request-audit` is real now, backed by D1 (see **Request statistics**).
 
-`/sessions` lists sessions, but revoking one peer session (`POST /session/{id}/logout`) is also
-missing. Until those land, those screens render their error state rather than wrong data.
+`/sessions` lists sessions, but revoking one peer session (`POST /session/{id}/logout`) is still
+missing.
 
 `/email` works: `POST /me/email/start` mails a code to the new address and `POST /me/email/verify`
 moves it, both keyed on the session's user. One divergence: the legacy server consumed the code and
@@ -210,6 +212,27 @@ moved the address inside one interactive transaction, so a losing race on "addre
 rolled the consumption back. D1 has no interactive transaction here, so the order is
 consume-then-assign — that race costs the caller one code instead of leaving a valid code unspent.
 It fails closed, and the address is never changed without a code that was actually valid.
+
+## Request statistics
+
+The legacy `/admin/request-audit` counted requests in process memory and reset on restart. A Worker
+cannot: isolates are short-lived and a user's requests land in whichever isolate is warm, so an
+in-memory counter would report a tiny, arbitrary slice. Two options were considered and one taken:
+
+- **Taken — persist in D1.** `request_stats(bucket, method, endpoint, status, hits, total_ms,
+  last_seen)` and `request_probes(bucket, method, path, hits, last_seen)`, both written by an
+  upsert and bucketed at five minutes, so a burst on one endpoint costs one row per status per
+  bucket rather than one row per request. `GET /admin/request-audit` aggregates the last 24 hours.
+- **Rejected — Cloudflare Analytics Engine / GraphQL.** Better numbers, but it needs a scoped API
+  token inside the Worker for a read-only panel, and Analytics Engine is not part of the free
+  plan this Worker targets.
+
+What the payload means: `started_at` is the start of the window, every endpoint carries
+`error_count` and `mean_ms` next to `count`, and unknown paths are capped at 50 distinct entries
+with the rest summed into a single `(other)` row — the cap the legacy spec already described.
+Counters age out after 30 days, probes after 7, and pruning runs when the endpoint is read. Every
+request costs one D1 upsert, issued through `ctx.waitUntil` so it never delays or fails the request
+it describes.
 
 ## Migration inventory (phase 8)
 
@@ -235,8 +258,8 @@ These are deliberate, or need confirming against the legacy test suite before cu
    not change `/jwks`.
 3. **`/admin/database`** → cannot exist as a file export on D1. Replaced by
    `wrangler d1 export` / Time Travel plus an encrypted off-platform snapshot.
-4. **`/admin/resources`** → `sysinfo` host metrics are meaningless on Workers; replaced by
-   platform observability.
+4. **`/admin/resources`** → `sysinfo` host metrics are meaningless on Workers. The screen was
+   deleted rather than faked; platform observability lives in the dashboard.
 5. **Rate limiting** → the legacy `/email/start` has none. A Durable Object token bucket is
    added here as a security fix, not as parity; it must fail closed without changing the
    documented success/error codes for normal traffic.
@@ -266,6 +289,10 @@ These are deliberate, or need confirming against the legacy test suite before cu
     origin instead of being read from `app_meta`, which a fresh database still fills with
     `localhost` — and correcting that needs the administrator the claim creates. See **Admin
     bootstrap**.
+13. **`GET /admin/request-audit` is window-based, not uptime-based** → `started_at` is the start of
+    a fixed 24-hour window, `window_seconds` says so, and each endpoint carries `error_count` and
+    `mean_ms` (4xx/5xx and mean wall-clock time) — the two numbers that tell "busy" apart from
+    "broken" for an automated reader. See **Request statistics**.
 
 ## Runtime budget: no paid plan assumed
 
