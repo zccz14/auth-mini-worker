@@ -38,18 +38,52 @@ describe('signing keys', () => {
 
     expect(body.keys).toHaveLength(2);
     for (const key of body.keys) {
-      expect(key).toEqual({ kty: 'OKP', crv: 'Ed25519', x: expect.any(String) });
+      expect(key).toEqual({
+        alg: 'EdDSA',
+        crv: 'Ed25519',
+        kid: expect.any(String),
+        kty: 'OKP',
+        use: 'sig',
+        x: expect.any(String),
+      });
       expect('d' in key).toBe(false);
     }
     const admin = await adminJwksBody(store);
     expect(admin.keys.map((entry) => entry.slot)).toEqual(['CURRENT', 'STANDBY']);
   });
 
+  it('publishes the kid that a token header names', async () => {
+    const store = new MemoryStore();
+    const key = await currentSigningKey(store);
+    const body = await publicJwksBody(store);
+
+    expect(body.keys.map((published) => published.kid)).toContain(key.kid);
+  });
+
+  it('stamps the kid onto rows stored before it was part of the JWK', async () => {
+    const store = new MemoryStore();
+    await ensureSigningKeys(store);
+    store.rows = store.rows.map((row) => ({
+      ...row,
+      publicJwk: JSON.stringify({ kty: 'OKP', crv: 'Ed25519', x: JSON.parse(row.publicJwk).x }),
+    }));
+
+    const body = await publicJwksBody(store);
+    expect(body.keys.map((key) => key.kid)).toEqual(store.rows.map((row) => row.kid));
+  });
+
   it('hands the current private key out for signing only when asked', async () => {
     const store = new MemoryStore();
     const key = await currentSigningKey(store);
     expect(key.privateJwk.d).toHaveLength(43);
-    expect(key.publicJwk).toEqual({ kty: 'OKP', crv: 'Ed25519', x: key.privateJwk.x });
+    expect(key.publicJwk).toEqual({
+      alg: 'EdDSA',
+      crv: 'Ed25519',
+      kid: key.kid,
+      kty: 'OKP',
+      use: 'sig',
+      x: key.privateJwk.x,
+    });
   });
 });
 

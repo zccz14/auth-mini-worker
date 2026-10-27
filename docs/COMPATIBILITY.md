@@ -30,6 +30,12 @@ payload: {"sub","sid","iss","aud","amr","auth_admin","typ":"access","iat","exp"}
 `/jwks` returns `{"keys":[public_jwk, ...]}` ordered CURRENT then STANDBY, public material
 only. `kid` is opaque; migrated keys keep their legacy `kid` values verbatim.
 
+Each `public_jwk` carries exactly the six members legacy wrote, in this order:
+`{"alg":"EdDSA","crv":"Ed25519","kid":"<kid>","kty":"OKP","use":"sig","x":"<base64url>"}`.
+Publishing `kty`/`crv`/`x` alone is not enough: a token header names its `kid`, so any verifier
+that resolves the key from `/jwks` — the browser SDK and `auth-mini-axum` both do — needs that
+member to find it. The private JWK keeps the same members plus `d`.
+
 ## L1 — token material and timestamps
 
 | Material | Legacy rule | Here |
