@@ -23,6 +23,7 @@ vi.mock('@/app/providers/app-provider', () => ({
       authenticated: true,
     },
     setupError: '',
+    setupInitialized: true,
     setupLoading: false,
     setupState: {
       admin_user_id: 'admin-user',

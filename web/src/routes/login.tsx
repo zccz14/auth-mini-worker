@@ -53,7 +53,7 @@ const SSO_UNAVAILABLE_NOTICE = 'sso-unavailable';
 export function LoginRoute() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { sdk, session, setupState } = useApp();
+  const { sdk, session, setupInitialized, setupState } = useApp();
   const { t } = useI18n();
   const request = useMemo(
     () => parseLoginRequest(location.search, window.location.search),
@@ -105,7 +105,11 @@ export function LoginRoute() {
   const canStartRemoteLogin = sdkReady && pendingAction === null;
   const brandName = setupState?.brand_name ?? 'auth-mini';
   const logoSrc = `${import.meta.env.BASE_URL}auth-mini-logo.png`;
-  const issuerHostname = setupState ? issuerAudience(setupState.issuer) : null;
+  const issuerHostname = setupState
+    ? issuerAudience(setupState.issuer)
+    : setupInitialized
+      ? window.location.hostname
+      : null;
   const brandBackgroundImage = setupState?.brand_background_image ?? '';
   const loginBackgroundStyle: CSSProperties | undefined = brandBackgroundImage
     ? { backgroundImage: `url("${brandBackgroundImage}")` }

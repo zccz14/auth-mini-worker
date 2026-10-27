@@ -181,12 +181,12 @@ function SidebarLink({
 }
 
 export function AppShell() {
-  const { session, setupError, setupLoading, setupState } = useApp();
+  const { session, setupError, setupInitialized, setupLoading, setupState } = useApp();
   const { isReady, signOut } = useAuthMini();
   const { t } = useI18n();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const initialized = Boolean(setupState?.admin_user_id);
+  const initialized = setupInitialized;
   const authenticated = session.authenticated;
   const admin = accessTokenHasAdmin(session.accessToken);
   const brandName = setupState?.brand_name ?? t('common.loading');
