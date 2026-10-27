@@ -4,6 +4,11 @@ import type {
   Ed25519Store,
   EmailChangeOtpStore,
   EmailOtpRecord,
+  EndpointTotals,
+  ProbeTotals,
+  RequestHit,
+  RequestProbe,
+  RequestStatsStore,
   EmailOtpStore,
   RemoteLoginRow,
   RemoteLoginStore,
@@ -82,6 +87,70 @@ export class MemoryEmailChangeStore implements EmailChangeOtpStore {
     this.taken.add(email);
     this.assigned.set(userId, { email, at: now });
     return true;
+  }
+}
+
+export class MemoryRequestStatsStore implements RequestStatsStore {
+  hits: RequestHit[] = [];
+  probes: RequestProbe[] = [];
+  prunedBefore: number[] = [];
+
+  async recordHit(hit: RequestHit): Promise<void> {
+    this.hits.push({ ...hit });
+  }
+
+  async recordProbe(probe: RequestProbe): Promise<void> {
+    this.probes.push({ ...probe });
+  }
+
+  async summarize(
+    sinceBucket: number,
+    options: { endpointLimit: number; probeLimit: number },
+  ): Promise<{
+    endpoints: EndpointTotals[];
+    probes: ProbeTotals[];
+    probeOverflow: { count: number; lastSeen: number } | null;
+  }> {
+    const endpoints = new Map<string, EndpointTotals>();
+    for (const hit of this.hits) {
+      if (hit.bucket < sinceBucket) continue;
+      const key = `${hit.method} ${hit.endpoint}`;
+      const row = endpoints.get(key) ?? { method: hit.method, endpoint: hit.endpoint, count: 0, errorCount: 0, totalMs: 0 };
+      row.count += hit.hits;
+      row.totalMs += hit.totalMs;
+      if (hit.status >= 400) row.errorCount += hit.hits;
+      endpoints.set(key, row);
+    }
+
+    const probes = new Map<string, ProbeTotals>();
+    for (const probe of this.probes) {
+      if (probe.bucket < sinceBucket) continue;
+      const key = `${probe.method} ${probe.path}`;
+      const row = probes.get(key) ?? { method: probe.method, path: probe.path, count: 0, lastSeen: 0 };
+      row.count += probe.hits;
+      row.lastSeen = Math.max(row.lastSeen, probe.now);
+      probes.set(key, row);
+    }
+
+    const rankedProbes = [...probes.values()].sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+    const totalProbeHits = rankedProbes.reduce((sum, row) => sum + row.count, 0);
+    const listedProbes = rankedProbes.slice(0, options.probeLimit);
+    const listedHits = listedProbes.reduce((sum, row) => sum + row.count, 0);
+
+    return {
+      endpoints: [...endpoints.values()]
+        .sort((a, b) => b.count - a.count || a.endpoint.localeCompare(b.endpoint))
+        .slice(0, options.endpointLimit),
+      probes: listedProbes,
+      probeOverflow:
+        totalProbeHits > listedHits
+          ? { count: totalProbeHits - listedHits, lastSeen: Math.max(...rankedProbes.map((row) => row.lastSeen)) }
+          : null,
+    };
+  }
+
+  async prune(beforeBucket: number): Promise<void> {
+    this.prunedBefore.push(beforeBucket);
   }
 }
 

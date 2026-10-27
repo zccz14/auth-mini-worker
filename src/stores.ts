@@ -210,6 +210,56 @@ export interface RemoteLoginStore {
   consume(requestId: string, exchangeCodeHash: string, now: string): Promise<boolean>;
 }
 
+/** One counted request, already bucketed by the caller. */
+export interface RequestHit {
+  bucket: number;
+  method: string;
+  endpoint: string;
+  status: number;
+  hits: number;
+  totalMs: number;
+  now: number;
+}
+
+export interface RequestProbe {
+  bucket: number;
+  method: string;
+  path: string;
+  hits: number;
+  now: number;
+}
+
+export interface EndpointTotals {
+  method: string;
+  endpoint: string;
+  count: number;
+  errorCount: number;
+  totalMs: number;
+}
+
+export interface ProbeTotals {
+  method: string;
+  path: string;
+  count: number;
+  lastSeen: number;
+}
+
+/**
+ * Persistent request counters. A Worker cannot keep them in memory — the next request may be a
+ * different isolate — so every write is an upsert into D1 and every read is an aggregate.
+ */
+export interface RequestStatsStore {
+  recordHit(hit: RequestHit): Promise<void>;
+  recordProbe(probe: RequestProbe): Promise<void>;
+  /** Aggregates everything at or after `sinceBucket`, busiest first. */
+  summarize(sinceBucket: number, options: { endpointLimit: number; probeLimit: number }): Promise<{
+    endpoints: EndpointTotals[];
+    probes: ProbeTotals[];
+    probeOverflow: { count: number; lastSeen: number } | null;
+  }>;
+  prune(beforeBucket: number): Promise<void>;
+}
+
 export interface UserSummary {
   id: string;
   email: string | null;

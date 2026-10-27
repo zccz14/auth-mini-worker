@@ -21,6 +21,7 @@ import { handleEmailChangeStart, handleEmailChangeVerify } from './routes/email-
 import { D1Ed25519Store } from './d1-ed25519';
 import { D1DirectoryStore } from './d1-directory';
 import { D1RemoteLoginStore } from './d1-remote-login';
+import { D1RequestStatsStore } from './d1-stats';
 import { D1WebauthnStore } from './d1-webauthn';
 import type { AdminDeps } from './routes/admin';
 import type { DirectoryDeps } from './routes/directory';
@@ -56,6 +57,7 @@ import {
   handleAdminConfig,
   handleAdminJwks,
   handleAdminJwksRotate,
+  handleAdminRequestAudit,
   handleAdminSetup,
   handleAdminSetupPasskey,
   handleAdminSetupPasskeyOptions,
@@ -64,6 +66,7 @@ import type { SessionDeps } from './routes/session';
 import { handleMe, handleSessionLogout, handleSessionRefresh, handleTime } from './routes/session';
 import { handleJwks } from './routes/jwks';
 import { isWebAssetPath, serveWebAsset } from './web-assets';
+import { endpointLabel, recordProbe, recordRequest } from './stats';
 
 /** One SMTP path for every OTP mailer; the routes only choose what the message says. */
 const smtpSender: MailSender = async (config, to, content) => {
@@ -157,6 +160,7 @@ async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
     ...(await sessionDeps(request, env)),
     adminStore: new D1AdminStore(env.DB),
     webauthnStore: new D1WebauthnStore(env.DB),
+    requestStatsStore: new D1RequestStatsStore(env.DB),
     setupToken: env.ADMIN_SETUP_TOKEN ?? null,
   };
 }
@@ -202,6 +206,7 @@ const routes: Route[] = [
   route('DELETE', '/admin/user-directory-token', async (request, env) => handleUserDirectoryToken(request, await directoryDeps(request, env))),
   route('GET', '/integration/user-ids', async (request, env) => handleIntegrationUserIds(request, await directoryDeps(request, env))),
   route('GET', '/admin/jwks', async (request, env) => handleAdminJwks(request, await adminDeps(request, env))),
+  route('GET', '/admin/request-audit', async (request, env) => handleAdminRequestAudit(request, await adminDeps(request, env))),
   route('POST', '/admin/jwks/rotate', async (request, env) => handleAdminJwksRotate(request, await adminDeps(request, env))),
   route('POST', '/ed25519/start', async (request, env) => handleEd25519Start(request, await ed25519Deps(request, env))),
   route('POST', '/ed25519/verify', async (request, env) => handleEd25519Verify(request, await ed25519Deps(request, env))),
@@ -264,23 +269,47 @@ function matchRoute(method: string, pathname: string): { route: Route; params: P
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === 'OPTIONS') return preflight();
 
     const { pathname } = new URL(request.url);
     if (isWebAssetPath(pathname)) return serveWebAsset(request, env);
 
-    const matched = matchRoute(request.method, pathname);
-    if (!matched) return errorResponse(404, 'not_found');
+    const startedAt = Date.now();
+    const store = new D1RequestStatsStore(env.DB);
+    const now = new Date();
+    // Statistics must never decide whether a request succeeds: the write is detached and its
+    // failure is swallowed. One upsert per request, bucketed in `src/stats.ts`.
+    const record = (task: Promise<void>) => ctx.waitUntil(task.catch(() => undefined));
 
-    try {
-      return await matched.route.handler(request, env, matched.params);
-    } catch (error) {
-      if (error instanceof ApiError) return errorResponse(error.status, error.code);
-      // Malformed or over-strict bodies are a client error, never a leaked internal code.
-      if (error instanceof StrictJsonError) return errorResponse(400, 'invalid_request');
-      console.error('unhandled_error', error instanceof Error ? error.message : 'unknown');
-      return errorResponse(500, 'internal_error');
+    const matched = matchRoute(request.method, pathname);
+    if (!matched) {
+      record(recordProbe(store, { method: request.method, path: pathname, now }));
+      return errorResponse(404, 'not_found');
     }
+
+    let response: Response;
+    try {
+      response = await matched.route.handler(request, env, matched.params);
+    } catch (error) {
+      if (error instanceof ApiError) response = errorResponse(error.status, error.code);
+      // Malformed or over-strict bodies are a client error, never a leaked internal code.
+      else if (error instanceof StrictJsonError) response = errorResponse(400, 'invalid_request');
+      else {
+        console.error('unhandled_error', error instanceof Error ? error.message : 'unknown');
+        response = errorResponse(500, 'internal_error');
+      }
+    }
+
+    record(
+      recordRequest(store, {
+        method: request.method,
+        endpoint: endpointLabel(matched.route.segments),
+        status: response.status,
+        ms: Date.now() - startedAt,
+        now,
+      }),
+    );
+    return response;
   },
 };

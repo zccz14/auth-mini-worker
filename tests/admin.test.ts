@@ -5,7 +5,14 @@ import type { AdminDeps } from '../src/routes/admin';
 import { handleAdminConfig, handleAdminSetup } from '../src/routes/admin';
 import { mintSession } from '../src/session';
 import type { AdminCredentialSummary, AdminStore, AppConfig, SmtpInput, SmtpSummary } from '../src/stores';
-import { MemoryCredentialStore, MemoryKeyStore, MemorySessionStore, MemoryUserStore, MemoryWebauthnStore } from './doubles';
+import {
+  MemoryCredentialStore,
+  MemoryKeyStore,
+  MemoryRequestStatsStore,
+  MemorySessionStore,
+  MemoryUserStore,
+  MemoryWebauthnStore,
+} from './doubles';
 
 const NOW = new Date('2026-10-26T06:00:00.000Z');
 const ISSUER = 'https://auth.ntnl.io';
@@ -85,6 +92,7 @@ async function harness(options: { admin?: boolean; setupToken?: string | null } 
     now: NOW,
     adminStore,
     webauthnStore: new MemoryWebauthnStore(),
+    requestStatsStore: new MemoryRequestStatsStore(),
     setupToken: options.setupToken ?? null,
   };
 
