@@ -2,6 +2,7 @@ import type {
   Ed25519ChallengeRow,
   Ed25519CredentialRow,
   Ed25519Store,
+  EmailChangeOtpStore,
   EmailOtpRecord,
   EmailOtpStore,
   RemoteLoginRow,
@@ -44,6 +45,43 @@ export class MemoryOtpStore implements EmailOtpStore {
 
   async find(email: string): Promise<EmailOtpRecord | null> {
     return this.rows.get(email) ?? null;
+  }
+}
+
+export class MemoryEmailChangeStore implements EmailChangeOtpStore {
+  /** Pending code per user, exactly like the `user_id` primary key. */
+  rows = new Map<string, { email: string; codeHash: string; expiresAt: string; consumedAt: string | null }>();
+  /** Addresses owned by some account; `assignEmail` refuses them and moves the owner's row. */
+  taken = new Set<string>();
+  assigned = new Map<string, { email: string; at: string }>();
+
+  async emailInUse(email: string): Promise<boolean> {
+    return this.taken.has(email);
+  }
+
+  async upsert(userId: string, email: string, codeHash: string, expiresAt: string): Promise<void> {
+    this.rows.set(userId, { email, codeHash, expiresAt, consumedAt: null });
+  }
+
+  async invalidate(userId: string): Promise<void> {
+    const row = this.rows.get(userId);
+    if (row) row.consumedAt = new Date().toISOString();
+  }
+
+  async consume(userId: string, email: string, codeHash: string, now: string): Promise<boolean> {
+    const row = this.rows.get(userId);
+    if (!row || row.consumedAt !== null || row.expiresAt <= now || row.codeHash !== codeHash || row.email !== email) {
+      return false;
+    }
+    row.consumedAt = now;
+    return true;
+  }
+
+  async assignEmail(userId: string, email: string, now: string): Promise<boolean> {
+    if (this.taken.has(email)) return false;
+    this.taken.add(email);
+    this.assigned.set(userId, { email, at: now });
+    return true;
   }
 }
 

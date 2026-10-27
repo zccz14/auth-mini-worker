@@ -2,6 +2,7 @@ import { parsePasskey } from './webauthn';
 import type {
   AppMetaStore,
   CredentialStore,
+  EmailChangeOtpStore,
   EmailOtpRecord,
   EmailOtpStore,
   SessionRecord,
@@ -102,6 +103,72 @@ export class D1AppMetaStore implements AppMetaStore {
     const row = await this.db.prepare("SELECT issuer FROM app_meta WHERE id = 'APP' LIMIT 1").first<{ issuer: string }>();
     if (!row) throw new Error('app_meta_missing');
     return row.issuer;
+  }
+}
+
+/**
+ * `email_change_otps` is keyed by user, not by address: the pending change belongs to the account
+ * that asked for it, and a second request replaces the previous code instead of piling up.
+ *
+ * The legacy server consumed the code and moved the address in one transaction, so `verify` had
+ * two writes that failed together. D1 has no interactive transaction here, so the order is
+ * consume-then-assign: a losing race on "address already taken" costs one code rather than
+ * silently changing an address without a valid code.
+ */
+export class D1EmailChangeStore implements EmailChangeOtpStore {
+  constructor(private readonly db: D1Database) {}
+
+  async emailInUse(email: string): Promise<boolean> {
+    const row = await this.db
+      .prepare('SELECT 1 AS hit FROM users WHERE email = ?1 LIMIT 1')
+      .bind(email)
+      .first<{ hit: number }>();
+    return row !== null;
+  }
+
+  async upsert(userId: string, email: string, codeHash: string, expiresAt: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO email_change_otps (user_id, email, code_hash, expires_at, consumed_at)
+         VALUES (?1, ?2, ?3, ?4, NULL)
+         ON CONFLICT(user_id) DO UPDATE SET email = excluded.email,
+                                            code_hash = excluded.code_hash,
+                                            expires_at = excluded.expires_at,
+                                            consumed_at = NULL,
+                                            created_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(userId, email, codeHash, expiresAt)
+      .run();
+  }
+
+  async invalidate(userId: string): Promise<void> {
+    await this.db
+      .prepare('UPDATE email_change_otps SET consumed_at = ?1 WHERE user_id = ?2 AND consumed_at IS NULL')
+      .bind(new Date().toISOString(), userId)
+      .run();
+  }
+
+  async consume(userId: string, email: string, codeHash: string, now: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE email_change_otps SET consumed_at = ?1
+         WHERE user_id = ?2 AND email = ?3 AND code_hash = ?4
+           AND consumed_at IS NULL AND expires_at > ?1`,
+      )
+      .bind(now, userId, email, codeHash)
+      .run();
+    return (result.meta.changes ?? 0) === 1;
+  }
+
+  async assignEmail(userId: string, email: string, now: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE users SET email = ?1, email_verified_at = ?2
+         WHERE id = ?3 AND NOT EXISTS (SELECT 1 FROM users WHERE email = ?1)`,
+      )
+      .bind(email, now, userId)
+      .run();
+    return (result.meta.changes ?? 0) === 1;
   }
 }
 

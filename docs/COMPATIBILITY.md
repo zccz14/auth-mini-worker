@@ -189,20 +189,27 @@ in the spec; the unimplemented remainder is the roadmap in the README.
 The browser console is a wholesale copy of the legacy `ui-web` — all 16 routes, not a
 reimplementation — served by this Worker under `/web/` through the Static Assets binding.
 `web/src/sdk/` is the legacy SDK vendored in so the pages and the published
-`auth-mini-react-components` keep their `auth-mini/sdk/*` imports; `openapi.yaml` here is
-byte-identical to the legacy spec the generated client came from, so the two cannot drift silently.
+`auth-mini-react-components` keep their `auth-mini/sdk/*` imports; `openapi.yaml` here is the legacy
+spec the generated client came from, with one deliberate addition (`POST
+/admin/setup/passkey/options`), so the two cannot drift silently.
 
-Three screens call endpoints this Worker does not implement, so they fail at runtime while the rest
+Two screens call endpoints this Worker does not implement, so they fail at runtime while the rest
 of the console works:
 
 | Screen | Endpoint | State |
 |---|---|---|
-| `/email` | `POST /me/email/start`, `/me/email/verify` | among the 11 unimplemented paths |
 | `/admin/resources` | `GET /admin/resources` | never implemented (deliberate deviation) |
 | `/admin/request-audit` | `GET /admin/request-audit` | never implemented (deliberate deviation) |
 
 `/sessions` lists sessions, but revoking one peer session (`POST /session/{id}/logout`) is also
-missing. Until those land, the three screens render their error state rather than wrong data.
+missing. Until those land, those screens render their error state rather than wrong data.
+
+`/email` works: `POST /me/email/start` mails a code to the new address and `POST /me/email/verify`
+moves it, both keyed on the session's user. One divergence: the legacy server consumed the code and
+moved the address inside one interactive transaction, so a losing race on "address already taken"
+rolled the consumption back. D1 has no interactive transaction here, so the order is
+consume-then-assign — that race costs the caller one code instead of leaving a valid code unspent.
+It fails closed, and the address is never changed without a code that was actually valid.
 
 ## Migration inventory (phase 8)
 

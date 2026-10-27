@@ -16,6 +16,19 @@ export interface EmailOtpStore {
   find(email: string): Promise<EmailOtpRecord | null>;
 }
 
+/** The pending email change of an authenticated user; one row per user, replaced on retry. */
+export interface EmailChangeOtpStore {
+  /** True when any account already owns the address. */
+  emailInUse(email: string): Promise<boolean>;
+  upsert(userId: string, email: string, codeHash: string, expiresAt: string): Promise<void>;
+  /** Marks the pending code unusable, used when delivery fails. */
+  invalidate(userId: string): Promise<void>;
+  /** One conditional UPDATE: true only when this call spent a live, matching code. */
+  consume(userId: string, email: string, codeHash: string, now: string): Promise<boolean>;
+  /** True when the address was free and this user now owns it; also stamps `email_verified_at`. */
+  assignEmail(userId: string, email: string, now: string): Promise<boolean>;
+}
+
 export interface UserStore {
   /** Insert-or-ignore by email, then return the id, so an address never forks into two users. */
   ensureByEmail(email: string, now: string): Promise<string>;

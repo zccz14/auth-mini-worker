@@ -6,6 +6,9 @@ export interface MailContent {
   text: string;
 }
 
+/** Delivery seam: routes never see SMTP, they hand a built message to this. */
+export type MailSender = (config: SmtpConfig, to: string, content: MailContent) => Promise<void>;
+
 function encodeHeaderValue(value: string): string {
   // RFC 2047 only when needed, otherwise leave the readable form alone.
   if (/^[\x20-\x7e]*$/.test(value)) return value;

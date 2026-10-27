@@ -3,6 +3,7 @@ import { D1SigningKeyStore } from './d1-store';
 import {
   D1AppMetaStore,
   D1CredentialStore,
+  D1EmailChangeStore,
   D1EmailOtpStore,
   D1SessionStore,
   D1SmtpConfigStore,
@@ -11,10 +12,12 @@ import {
 import type { Env } from './env';
 import { ApiError, errorResponse, preflight } from './http/response';
 import { StrictJsonError } from './http/strict-json';
-import { buildMimeMessage } from './mail/message';
+import { buildMimeMessage, type MailSender } from './mail/message';
 import { sendSmtpMail, workerSocketFactory } from './mail/smtp';
 import type { EmailDeps } from './routes/email';
 import { handleEmailStart, handleEmailVerify } from './routes/email';
+import type { EmailChangeDeps } from './routes/email-change';
+import { handleEmailChangeStart, handleEmailChangeVerify } from './routes/email-change';
 import { D1Ed25519Store } from './d1-ed25519';
 import { D1DirectoryStore } from './d1-directory';
 import { D1RemoteLoginStore } from './d1-remote-login';
@@ -62,6 +65,23 @@ import { handleMe, handleSessionLogout, handleSessionRefresh, handleTime } from 
 import { handleJwks } from './routes/jwks';
 import { isWebAssetPath, serveWebAsset } from './web-assets';
 
+/** One SMTP path for every OTP mailer; the routes only choose what the message says. */
+const smtpSender: MailSender = async (config, to, content) => {
+  const raw = buildMimeMessage(config, to, content, new Date());
+  await sendSmtpMail(
+    workerSocketFactory,
+    {
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      password: config.password,
+      secure: config.secure,
+    },
+    { from: config.fromEmail, to, raw },
+    { timeoutMs: 15_000 },
+  );
+};
+
 async function emailDeps(request: Request, env: Env): Promise<EmailDeps> {
   return {
     issuer: await new D1AppMetaStore(env.DB).readIssuer(),
@@ -70,24 +90,19 @@ async function emailDeps(request: Request, env: Env): Promise<EmailDeps> {
     sessionStore: new D1SessionStore(env.DB),
     keyStore: new D1SigningKeyStore(env.DB),
     smtpStore: new D1SmtpConfigStore(env.DB),
-    sendMail: async (config, to, content) => {
-      const raw = buildMimeMessage(config, to, content, new Date());
-      await sendSmtpMail(
-        workerSocketFactory,
-        {
-          host: config.host,
-          port: config.port,
-          username: config.username,
-          password: config.password,
-          secure: config.secure,
-        },
-        { from: config.fromEmail, to, raw },
-        { timeoutMs: 15_000 },
-      );
-    },
+    sendMail: smtpSender,
     now: new Date(),
     clientIp: request.headers.get('cf-connecting-ip'),
     userAgent: request.headers.get('user-agent'),
+  };
+}
+
+async function emailChangeDeps(request: Request, env: Env): Promise<EmailChangeDeps> {
+  return {
+    ...(await sessionDeps(request, env)),
+    emailChangeStore: new D1EmailChangeStore(env.DB),
+    smtpStore: new D1SmtpConfigStore(env.DB),
+    sendMail: smtpSender,
   };
 }
 
@@ -168,6 +183,8 @@ const routes: Route[] = [
   route('GET', '/jwks', (request, env) => handleJwks(request, env)),
   route('POST', '/email/start', async (request, env) => handleEmailStart(request, await emailDeps(request, env))),
   route('POST', '/email/verify', async (request, env) => handleEmailVerify(request, await emailDeps(request, env))),
+  route('POST', '/me/email/start', async (request, env) => handleEmailChangeStart(request, await emailChangeDeps(request, env))),
+  route('POST', '/me/email/verify', async (request, env) => handleEmailChangeVerify(request, await emailChangeDeps(request, env))),
   route('POST', '/session/refresh', async (request, env) => handleSessionRefresh(request, await sessionDeps(request, env))),
   route('POST', '/session/logout', async (request, env) => handleSessionLogout(request, await sessionDeps(request, env))),
   route('GET', '/me', async (request, env) => handleMe(request, await sessionDeps(request, env))),
