@@ -411,8 +411,9 @@ describe('formal GUI routes', () => {
     expect(
       screen.getByRole('heading', { name: 'Admin overview', level: 2 }),
     ).toBeInTheDocument();
-    expect(screen.getByText('admin-user')).toBeInTheDocument();
-    expect(sdk.admin.config.fetch).not.toHaveBeenCalled();
+    expect(await screen.findByText('admin-user')).toBeInTheDocument();
+    // The overview reads the administrator view: the first-run payload is gated after the claim.
+    expect(sdk.admin.config.fetch).toHaveBeenCalledTimes(1);
     expect(sdk.admin.jwks.list).not.toHaveBeenCalled();
     expect(sdk.admin.users).not.toHaveBeenCalled();
     expect(sdk.admin.resources.fetch).not.toHaveBeenCalled();
@@ -428,7 +429,7 @@ describe('formal GUI routes', () => {
     expect(screen.getByLabelText('Current location')).toHaveTextContent(
       '/admin/resources',
     );
-    expect(sdk.admin.config.fetch).not.toHaveBeenCalled();
+    expect(sdk.admin.config.fetch).toHaveBeenCalledTimes(1);
     expect(sdk.admin.jwks.list).not.toHaveBeenCalled();
     expect(sdk.admin.users).not.toHaveBeenCalled();
     expect(sdk.admin.requestAudit.fetch).not.toHaveBeenCalled();
@@ -457,7 +458,7 @@ describe('formal GUI routes', () => {
     await user.type(screen.getByLabelText('Brand name'), 'Example Auth');
     await user.selectOptions(screen.getByLabelText('Language'), 'zh-CN');
     expect(screen.getByLabelText('品牌名称')).toHaveValue('Example Auth');
-    expect(sdk.admin.config.fetch).toHaveBeenCalledOnce();
+    expect(sdk.admin.config.fetch).toHaveBeenCalledTimes(2);
     await user.selectOptions(screen.getByLabelText('语言'), 'en');
     await user.type(
       screen.getByLabelText('Brand background image'),
