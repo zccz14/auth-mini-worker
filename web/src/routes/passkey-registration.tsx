@@ -10,13 +10,16 @@ const LOGIN_PATH = '/login?return_to=%2Fpasskey%2Fregister';
 
 export function PasskeyRegistrationRoute() {
   const navigate = useNavigate();
-  const { sdk, session, setupError, setupLoading, setupState } = useApp();
+  const { sdk, session, setupError, setupInitialized, setupLoading, setupState } =
+    useApp();
   const { t } = useI18n();
   const [pending, setPending] = useState(false);
   const [registered, setRegistered] = useState(false);
   const [error, setError] = useState('');
 
-  const passkeyConfigured = Boolean(setupState?.rp_id);
+  const passkeyConfigured = setupState
+    ? Boolean(setupState.rp_id)
+    : setupInitialized;
   const canRegister =
     Boolean(sdk) && session.authenticated && passkeyConfigured && !pending;
   const brandName = setupState?.brand_name ?? 'auth-mini';

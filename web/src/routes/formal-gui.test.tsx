@@ -62,6 +62,7 @@ vi.mock('@/app/providers/app-provider', () => ({
     sdk,
     session: sessionState.current,
     setupError: '',
+    setupInitialized: true,
     setupLoading: false,
     setupState: {
       admin_ed25519: null,

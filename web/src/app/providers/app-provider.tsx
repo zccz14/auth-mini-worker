@@ -23,10 +23,23 @@ const ANONYMOUS_SESSION = {
 type AppContextValue = {
   sdk: AppSdk | null;
   setupState: AdminSetupState | null;
+  /** True when an administrator exists, even if that state arrived as a 403. */
+  setupInitialized: boolean;
   setupLoading: boolean;
   setupError: string;
   reloadSetupState: () => Promise<void>;
 };
+
+/**
+ * `/admin/setup` is gated on loopback in the legacy server, so a Worker has to gate it on
+ * "no admin exists yet" instead. Once somebody claims the administrator, the endpoint answers
+ * 403 `admin_setup_forbidden` — that is the server reporting "already done", not a failure.
+ */
+function isAdminSetupForbidden(cause: unknown): boolean {
+  if (typeof cause !== 'object' || cause === null) return false;
+  const candidate = cause as { status?: unknown; error?: unknown };
+  return candidate.status === 403 && candidate.error === 'admin_setup_forbidden';
+}
 
 const AppContext = createContext<AppContextValue | null>(null);
 
@@ -52,6 +65,7 @@ function AppServicesProvider({ children }: PropsWithChildren) {
     [browserSdk, authMiniBaseUrl],
   );
   const [setupState, setSetupState] = useState<AdminSetupState | null>(null);
+  const [setupInitialized, setSetupInitialized] = useState(false);
   const [setupLoading, setSetupLoading] = useState(true);
   const [setupError, setSetupError] = useState('');
 
@@ -60,16 +74,23 @@ function AppServicesProvider({ children }: PropsWithChildren) {
     setSetupError('');
     try {
       const nextSetupState = await nextSdk.admin.setup.fetch();
-      if (active()) setSetupState(nextSetupState);
-    } catch (cause) {
       if (active()) {
-        setSetupState(null);
-        setSetupError(
-          cause instanceof Error
-            ? cause.message
-            : 'Unable to load server setup.',
-        );
+        setSetupState(nextSetupState);
+        setSetupInitialized(Boolean(nextSetupState.admin_user_id));
       }
+    } catch (cause) {
+      if (!active()) return;
+      if (isAdminSetupForbidden(cause)) {
+        setSetupState(null);
+        setSetupInitialized(true);
+        setSetupError('');
+        return;
+      }
+      setSetupState(null);
+      setSetupInitialized(false);
+      setSetupError(
+        cause instanceof Error ? cause.message : 'Unable to load server setup.',
+      );
     } finally {
       if (active()) setSetupLoading(false);
     }
@@ -89,6 +110,7 @@ function AppServicesProvider({ children }: PropsWithChildren) {
       value={{
         sdk,
         setupState,
+        setupInitialized,
         setupLoading,
         setupError,
         reloadSetupState: async () => {

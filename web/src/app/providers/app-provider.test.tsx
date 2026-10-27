@@ -82,6 +82,7 @@ function Probe() {
         )}
       </span>
       <span data-testid="setup">{app.setupState?.brand_name}</span>
+      <span data-testid="initialized">{String(app.setupInitialized)}</span>
       <button
         onClick={() => void app.sdk?.session.acceptRedirectCallback(tokens)}
       >
@@ -116,6 +117,29 @@ afterEach(() => {
 });
 
 describe('AppProvider', () => {
+  it('reads the gated setup endpoint as "already initialized"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: 'admin_setup_forbidden' }), {
+            status: 403,
+          }),
+      ),
+    );
+
+    render(
+      <AppProvider>
+        <Probe />
+      </AppProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('initialized').textContent).toBe('true'),
+    );
+    expect(screen.getByTestId('setup').textContent).toBe('');
+  });
+
   it('uses one public Provider session for the GUI and its management requests', async () => {
     const user = userEvent.setup();
     render(
