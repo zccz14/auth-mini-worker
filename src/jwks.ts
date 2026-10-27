@@ -26,12 +26,31 @@ export interface SigningKeyStore {
 
 const SLOT_ORDER: readonly KeySlot[] = ['CURRENT', 'STANDBY'];
 
-function toPublicJwk(jwk: Ed25519PrivateJwk): Ed25519PublicJwk {
-  return { kty: 'OKP', crv: 'Ed25519', x: jwk.x };
+/**
+ * The exact six members legacy wrote into `jwks_keys.public_jwk`, in legacy's order.
+ *
+ * `kid` is the point: a token header names its key, so a verifier that fetches `/jwks` has to be
+ * able to match on it. Publishing only `kty`/`crv`/`x` left every kid-based verifier — the React
+ * provider and `auth-mini-axum` among them — unable to find the key at all.
+ */
+function toPublicJwk(jwk: Ed25519PrivateJwk, kid: string): Ed25519PublicJwk {
+  return { alg: 'EdDSA', crv: 'Ed25519', kid, kty: 'OKP', use: 'sig', x: jwk.x };
 }
 
-function toPrivateJwk(jwk: Ed25519PrivateJwk): Ed25519PrivateJwk {
-  return { kty: 'OKP', crv: 'Ed25519', x: jwk.x, d: jwk.d };
+function toPrivateJwk(jwk: Ed25519PrivateJwk, kid: string): Ed25519PrivateJwk {
+  return { alg: 'EdDSA', crv: 'Ed25519', kid, kty: 'OKP', use: 'sig', x: jwk.x, d: jwk.d };
+}
+
+/**
+ * Rows written before `kid` was stamped into the JWK still have to answer correctly, so the
+ * serializers rebuild the legacy shape from the row instead of trusting the stored JSON.
+ */
+function storedPublicJwk(row: SigningKeyRow): Ed25519PublicJwk {
+  const parsed = JSON.parse(row.publicJwk) as Partial<Ed25519PublicJwk>;
+  if (parsed.kid === row.kid && parsed.alg === 'EdDSA' && parsed.use === 'sig' && parsed.kty === 'OKP') {
+    return parsed as Ed25519PublicJwk;
+  }
+  return { alg: 'EdDSA', crv: 'Ed25519', kid: row.kid, kty: 'OKP', use: 'sig', x: parsed.x as string };
 }
 
 /** Bootstraps any missing slot, mirroring `bootstrap_keys()` in the legacy server. */
@@ -41,12 +60,13 @@ export async function ensureSigningKeys(store: SigningKeyStore): Promise<Signing
   for (const slot of SLOT_ORDER) {
     if (rows.some((row) => row.slot === slot)) continue;
     const pair = await generateKeyPair();
+    const row_kid = uuidv4();
     const row: SigningKeyRow = {
       slot,
-      kid: uuidv4(),
+      kid: row_kid,
       alg: 'EdDSA',
-      publicJwk: JSON.stringify(toPublicJwk(pair.privateJwk)),
-      privateJwk: JSON.stringify(toPrivateJwk(pair.privateJwk)),
+      publicJwk: JSON.stringify(toPublicJwk(pair.privateJwk, row_kid)),
+      privateJwk: JSON.stringify(toPrivateJwk(pair.privateJwk, row_kid)),
     };
     await store.insert(row);
     rows = [...rows, row];
@@ -97,19 +117,20 @@ export async function rotateSigningKeys(
   if (!standby) throw new Error('missing_standby_key');
 
   const pair = await generateKeyPair();
+  const nextKid = uuidv4();
   const next: SigningKeyRow = {
     slot: 'STANDBY',
-    kid: uuidv4(),
+    kid: nextKid,
     alg: 'EdDSA',
-    publicJwk: JSON.stringify(toPublicJwk(pair.privateJwk)),
-    privateJwk: JSON.stringify(toPrivateJwk(pair.privateJwk)),
+    publicJwk: JSON.stringify(toPublicJwk(pair.privateJwk, nextKid)),
+    privateJwk: JSON.stringify(toPrivateJwk(pair.privateJwk, nextKid)),
   };
   await store.rotate(next);
 
   return {
     keys: [
-      { slot: 'CURRENT', public_jwk: JSON.parse(standby.publicJwk) as Ed25519PublicJwk },
-      { slot: 'STANDBY', public_jwk: JSON.parse(next.publicJwk) as Ed25519PublicJwk },
+      { slot: 'CURRENT', public_jwk: storedPublicJwk(standby) },
+      { slot: 'STANDBY', public_jwk: storedPublicJwk(next) },
     ],
   };
 }
@@ -118,7 +139,7 @@ export async function rotateSigningKeys(
 export async function publicJwksBody(store: SigningKeyStore): Promise<{ keys: Ed25519PublicJwk[] }> {
   const rows = await ensureSigningKeys(store);
   const keys = SLOT_ORDER.flatMap((slot) =>
-    rows.filter((row) => row.slot === slot).map((row) => JSON.parse(row.publicJwk) as Ed25519PublicJwk),
+    rows.filter((row) => row.slot === slot).map(storedPublicJwk),
   );
   return { keys };
 }
@@ -129,7 +150,7 @@ export async function adminJwksBody(store: SigningKeyStore): Promise<{ keys: Arr
   const keys = SLOT_ORDER.flatMap((slot) =>
     rows
       .filter((row) => row.slot === slot)
-      .map((row) => ({ slot: row.slot, public_jwk: JSON.parse(row.publicJwk) as Ed25519PublicJwk })),
+      .map((row) => ({ slot: row.slot, public_jwk: storedPublicJwk(row) })),
   );
   return { keys };
 }

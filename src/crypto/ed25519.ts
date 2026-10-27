@@ -1,8 +1,12 @@
 import { b64urlDecode, b64urlEncode } from './b64url';
 
 export interface Ed25519PublicJwk extends JsonWebKey {
-  kty: 'OKP';
+  /** The members legacy wrote into `jwks_keys.public_jwk`, in the same order. */
+  alg?: 'EdDSA';
   crv: 'Ed25519';
+  kid?: string;
+  kty: 'OKP';
+  use?: 'sig';
   x: string;
 }
 
