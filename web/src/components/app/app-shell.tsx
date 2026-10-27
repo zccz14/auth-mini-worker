@@ -189,7 +189,8 @@ export function AppShell() {
   const initialized = setupInitialized;
   const authenticated = session.authenticated;
   const admin = accessTokenHasAdmin(session.accessToken);
-  const brandName = setupState?.brand_name ?? t('common.loading');
+  // The setup payload is gated once an admin exists, so "loading" would stay forever.
+  const brandName = setupState?.brand_name ?? 'auth-mini';
   const logoSrc = `${import.meta.env.BASE_URL}auth-mini-logo.png`;
   const setupPath = location.pathname === '/initialize';
   const loginPath = location.pathname === '/login';
