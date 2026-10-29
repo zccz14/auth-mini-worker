@@ -8,7 +8,12 @@ import {
 } from 'react';
 import { AuthMiniProvider, useAuthMini } from 'auth-mini-react-components';
 import { resolveServerBaseUrl } from '@/lib/app-config';
-import { extendAppSdk, type AdminSetupState, type AppSdk } from '@/lib/app-sdk';
+import {
+  extendAppSdk,
+  type AdminSetupState,
+  type AppSdk,
+  type Branding,
+} from '@/lib/app-sdk';
 
 const ANONYMOUS_SESSION = {
   status: 'anonymous',
@@ -22,6 +27,8 @@ const ANONYMOUS_SESSION = {
 
 type AppContextValue = {
   sdk: AppSdk | null;
+  /** Public branding, readable without a session and after the instance is claimed. */
+  branding: Branding | null;
   setupState: AdminSetupState | null;
   /** True when an administrator exists, even if that state arrived as a 403. */
   setupInitialized: boolean;
@@ -64,6 +71,7 @@ function AppServicesProvider({ children }: PropsWithChildren) {
     () => browserSdk && extendAppSdk(browserSdk, authMiniBaseUrl),
     [browserSdk, authMiniBaseUrl],
   );
+  const [branding, setBranding] = useState<Branding | null>(null);
   const [setupState, setSetupState] = useState<AdminSetupState | null>(null);
   const [setupInitialized, setSetupInitialized] = useState(false);
   const [setupLoading, setSetupLoading] = useState(true);
@@ -105,10 +113,32 @@ function AppServicesProvider({ children }: PropsWithChildren) {
     };
   }, [sdk]);
 
+  // Branding is cosmetic: a failure leaves the defaults on screen rather than an error state.
+  useEffect(() => {
+    if (!sdk?.branding) return;
+    let active = true;
+    void sdk.branding.fetch().then(
+      (next) => {
+        if (active) setBranding(next);
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, [sdk]);
+
+  const brandName = branding?.brand_name ?? setupState?.brand_name ?? 'Auth Mini';
+  useEffect(() => {
+    // The tab is part of the brand: renaming the instance has to reach it too.
+    document.title = brandName;
+  }, [brandName]);
+
   return (
     <AppContext.Provider
       value={{
         sdk,
+        branding,
         setupState,
         setupInitialized,
         setupLoading,

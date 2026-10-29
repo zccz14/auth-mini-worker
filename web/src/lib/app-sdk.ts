@@ -17,6 +17,17 @@ type Ed25519Api = {
 };
 
 /**
+ * The public face of the instance: what an unauthenticated visitor sees in the tab title, the
+ * login page and the console header. Served by `GET /branding`, which needs no session.
+ */
+export type Branding = {
+  issuer: string;
+  rp_id: string;
+  brand_name: string;
+  brand_background_image: string;
+};
+
+/**
  * `/admin/setup` answers with the first-run projection only; `admin_ed25519` and `smtp` come from
  * `/admin/config`, which needs a token, so they are optional here rather than absent by accident.
  */
@@ -120,7 +131,6 @@ type AdminApi = {
     fetch(): Promise<AdminRequestAuditSnapshot>;
   };
   users(): Promise<{ users: Array<Record<string, unknown>> }>;
-  databaseUrl(): string;
 };
 
 export type AppCurrentUser = MeResponse;
@@ -163,6 +173,7 @@ type CurrentUserApi = {
 };
 
 export type AppSdk = AuthMiniApi & {
+  branding: { fetch(): Promise<Branding> };
   admin: AdminApi;
   currentUser: CurrentUserApi;
   remoteLogin: RemoteLoginApi;
@@ -295,6 +306,11 @@ export function extendAppSdk(sdk: AuthMiniApi, serverBaseUrl: string): AppSdk {
 
   return {
     ...sdk,
+    branding: {
+      fetch() {
+        return getJson<Branding>('/branding');
+      },
+    },
     async authorizeSession(input) {
       try {
         return await postJson<AppSessionTokens>(
@@ -410,9 +426,6 @@ export function extendAppSdk(sdk: AuthMiniApi, serverBaseUrl: string): AppSdk {
           '/admin/users',
           await requireAccessToken(),
         );
-      },
-      databaseUrl() {
-        return new URL('/admin/database', serverBaseUrl).toString();
       },
     },
     currentUser: {

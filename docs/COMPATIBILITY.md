@@ -190,8 +190,8 @@ The browser console is a wholesale copy of the legacy `ui-web` — all 16 routes
 reimplementation — served by this Worker under `/web/` through the Static Assets binding.
 `web/src/sdk/` is the legacy SDK vendored in so the pages and the published
 `auth-mini-react-components` keep their `auth-mini/sdk/*` imports; `openapi.yaml` here is the legacy
-spec the generated client came from, with one deliberate addition (`POST
-/admin/setup/passkey/options`), so the two cannot drift silently.
+spec the generated client came from, with two deliberate additions (`POST
+/admin/setup/passkey/options`, `GET /branding`), so the two cannot drift silently.
 
 `/admin/resources` was **removed from the console** on 2026-10-27. The legacy screen reported host
 CPU, load average, memory, swap, network interfaces and SQLite file sizes; a Worker has none of
@@ -257,7 +257,8 @@ These are deliberate, or need confirming against the legacy test suite before cu
    private keys. Moving the private half into a Worker Secret is the planned v1.1 step; it must
    not change `/jwks`.
 3. **`/admin/database`** → cannot exist as a file export on D1. Replaced by
-   `wrangler d1 export` / Time Travel plus an encrypted off-platform snapshot.
+   `wrangler d1 export` / Time Travel plus an encrypted off-platform snapshot, and the console's
+   "Export SQLite database" button was removed rather than left failing against a 404.
 4. **`/admin/resources`** → `sysinfo` host metrics are meaningless on Workers. The screen was
    deleted rather than faked; platform observability lives in the dashboard.
 5. **Rate limiting** → the legacy `/email/start` has none. A Durable Object token bucket is
@@ -293,6 +294,12 @@ These are deliberate, or need confirming against the legacy test suite before cu
     a fixed 24-hour window, `window_seconds` says so, and each endpoint carries `error_count` and
     `mean_ms` (4xx/5xx and mean wall-clock time) — the two numbers that tell "busy" apart from
     "broken" for an automated reader. See **Request statistics**.
+14. **`GET /branding`** → an addition. Branding is rendered to visitors who have not signed in, and
+    the first-run probe answers 403 once the root user is claimed, so a renamed instance kept
+    calling itself `auth-mini` on every logged-out page — including the browser tab, which nothing
+    had ever set. It returns exactly `issuer`, `rp_id`, `brand_name`, `brand_background_image`:
+    all four are already public in tokens and passkey ceremonies, and it never exposes the
+    administrator or the SMTP rows.
 
 ## Runtime budget: no paid plan assumed
 

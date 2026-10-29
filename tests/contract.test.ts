@@ -19,12 +19,14 @@ function matches(template: string, path: string): boolean {
 }
 
 describe('openapi contract', () => {
-  it('vendors the full legacy surface plus the one deliberate addition', () => {
-    // 36 paths are the legacy surface, byte for byte. `POST /admin/setup/passkey/options` is the
-    // one addition: the first-run claim registers a passkey instead of importing an Ed25519 key,
-    // and a ceremony needs a challenge issued before the credential exists. Recorded in
-    // docs/COMPATIBILITY.md.
-    expect(Object.keys(spec.paths)).toHaveLength(37);
+  it('vendors the full legacy surface plus the deliberate additions', () => {
+    // 36 paths are the legacy surface, byte for byte. The additions are recorded in
+    // docs/COMPATIBILITY.md:
+    //   POST /admin/setup/passkey/options — the first-run claim registers a passkey, so a
+    //   challenge has to be issued before the credential exists.
+    //   GET /branding — branding is rendered to visitors who have not signed in, and the
+    //   first-run probe answers 403 once the root user is claimed.
+    expect(Object.keys(spec.paths)).toHaveLength(38);
   });
 
   it('implements no route the contract does not define', () => {
