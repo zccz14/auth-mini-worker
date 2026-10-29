@@ -234,6 +234,31 @@ Counters age out after 30 days, probes after 7, and pruning runs when the endpoi
 request costs one D1 upsert, issued through `ctx.waitUntil` so it never delays or fails the request
 it describes.
 
+## Mail templates
+
+The legacy server hardcoded both transactional mails, including its own name ("Your auth-mini
+verification code"). Once `/branding` made the instance name public, a renamed deployment still
+mailed the old one. Both mails are now templates — `app_meta.login_mail_subject`,
+`login_mail_text`, `email_change_mail_subject`, `email_change_mail_text` — rendered when the
+message is composed, so a rename reaches the next mail without anyone editing a template.
+
+- Placeholders are `{brand}`, `{code}` and `{minutes}`. `{minutes}` comes from `OTP_SECONDS`, so
+  the body cannot claim a lifetime the code does not have; `{brand}` is substituted at send time.
+- `''` means "no opinion": `src/mail/template.ts` holds the built-in wording, and an instance
+  still called `auth-mini` therefore sends byte-identical mail to the legacy server. Read
+  deliberately does not write — `GET /admin/config` reports the wording that will be sent, but an
+  untouched instance keeps storing `''` and inheriting.
+- `PUT /admin/config` stores what it is given and refuses what could not be delivered: an unknown
+  placeholder, a body without `{code}`, a subject with a line break (header injection), or text
+  past 200 (subject) / 4000 (body) characters. Absent `mail_templates` leaves them unchanged,
+  exactly like `smtp`.
+- Additive contract: `mail_templates` is a new optional field on `PUT /admin/config` and a new
+  field in the `GET`/`PUT` response. The legacy server has neither, so this is a documented
+  divergence rather than a byte-level match.
+
+The sign-in page's "you are signing in to Auth Mini" line stays hardcoded on purpose: it names the
+protocol endpoint, not the instance's brand.
+
 ## Migration inventory (phase 8)
 
 | Table | What moves | Transform |

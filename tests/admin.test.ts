@@ -8,6 +8,7 @@ import type { AdminCredentialSummary, AdminStore, AppConfig, SmtpInput, SmtpSumm
 import {
   MemoryCredentialStore,
   MemoryKeyStore,
+  MemoryMailTemplateStore,
   MemoryRequestStatsStore,
   MemorySessionStore,
   MemoryUserStore,
@@ -80,6 +81,7 @@ async function harness(options: { admin?: boolean; setupToken?: string | null } 
   const sessionStore = new MemorySessionStore();
   const userStore = new MemoryUserStore();
   const adminStore = new MemoryAdminStore();
+  const mailTemplates = new MemoryMailTemplateStore();
   const userId = await userStore.ensureByEmail('admin@example.com', NOW.toISOString());
   if (options.admin) userStore.adminId = userId;
 
@@ -93,6 +95,7 @@ async function harness(options: { admin?: boolean; setupToken?: string | null } 
     adminStore,
     webauthnStore: new MemoryWebauthnStore(),
     requestStatsStore: new MemoryRequestStatsStore(),
+    mailTemplates,
     setupToken: options.setupToken ?? null,
   };
 
@@ -109,7 +112,7 @@ async function harness(options: { admin?: boolean; setupToken?: string | null } 
     isAdmin: options.admin ?? false,
     now: NOW,
   });
-  return { deps, pair, adminStore, userStore };
+  return { deps, pair, adminStore, userStore, mailTemplates };
 }
 
 function request(method: string, body?: unknown, token?: string, headers: Record<string, string> = {}): Request {
@@ -283,6 +286,86 @@ describe('GET/PUT /admin/config', () => {
       deps,
     );
     expect(unknownId.status).toBe(400);
+  });
+
+  it('hands back the built-in mail templates with the brand already substituted', async () => {
+    const { deps, mailTemplates, pair } = await harness({ admin: true });
+    mailTemplates.brandName = 'No Trade No Life';
+
+    const response = await handleAdminConfig(request('GET', undefined, pair.accessToken), deps);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as Record<string, unknown>)['mail_templates']).toEqual({
+      login: {
+        subject: 'Your {brand} verification code',
+        text: 'Your verification code is {code}. It expires in {minutes} minutes.',
+      },
+      email_change: {
+        subject: 'Confirm your {brand} email change',
+        text: 'Your email change verification code is {code}. It expires in {minutes} minutes.',
+      },
+    });
+    // Read is not write: an untouched instance keeps storing "" and inheriting.
+    expect(mailTemplates.overrides).toEqual({
+      loginSubject: '',
+      loginText: '',
+      emailChangeSubject: '',
+      emailChangeText: '',
+    });
+  });
+
+  it('stores mail templates and leaves them alone when the field is absent', async () => {
+    const { deps, mailTemplates, pair } = await harness({ admin: true });
+    const base = { issuer: 'https://auth.ntnl.io', rp_id: 'auth.ntnl.io', brand_name: 'NTNL', brand_background_image: '' };
+
+    const saved = await handleAdminConfig(
+      request(
+        'PUT',
+        {
+          ...base,
+          mail_templates: {
+            login: { subject: '{brand} 登录验证码', text: '你的验证码是 {code}，{minutes} 分钟内有效。' },
+            email_change: { subject: '', text: '' },
+          },
+        },
+        pair.accessToken,
+      ),
+      deps,
+    );
+    expect(saved.status).toBe(200);
+    expect(mailTemplates.overrides).toEqual({
+      loginSubject: '{brand} 登录验证码',
+      loginText: '你的验证码是 {code}，{minutes} 分钟内有效。',
+      emailChangeSubject: '',
+      emailChangeText: '',
+    });
+    expect(((await saved.json()) as { mail_templates: Record<string, unknown> }).mail_templates).toEqual({
+      login: { subject: '{brand} 登录验证码', text: '你的验证码是 {code}，{minutes} 分钟内有效。' },
+      email_change: {
+        subject: 'Confirm your {brand} email change',
+        text: 'Your email change verification code is {code}. It expires in {minutes} minutes.',
+      },
+    });
+
+    const untouched = await handleAdminConfig(request('PUT', base, pair.accessToken), deps);
+    expect(untouched.status).toBe(200);
+    expect(mailTemplates.overrides.loginSubject).toBe('{brand} 登录验证码');
+  });
+
+  it('refuses mail templates that could not survive a delivery', async () => {
+    const { deps, pair } = await harness({ admin: true });
+    const base = { issuer: 'https://auth.ntnl.io', rp_id: 'auth.ntnl.io', brand_name: 'NTNL', brand_background_image: '' };
+    const put = (mailTemplates: unknown) =>
+      handleAdminConfig(request('PUT', { ...base, mail_templates: mailTemplates }, pair.accessToken), deps);
+
+    // No {code}: the user would get a mail they cannot type back.
+    expect((await put({ login: { subject: 's', text: 'no code here' }, email_change: { subject: '', text: '' } })).status).toBe(400);
+    // An unknown placeholder is a typo, not a feature.
+    expect((await put({ login: { subject: 's', text: '{coode}' }, email_change: { subject: '', text: '' } })).status).toBe(400);
+    // A subject is a header line.
+    expect((await put({ login: { subject: 'a\r\nBcc: x@y.z', text: '{code}' }, email_change: { subject: '', text: '' } })).status).toBe(400);
+    // Unknown keys and missing groups are rejected rather than dropped.
+    expect((await put({ login: { subject: 's', text: '{code}', extra: 1 }, email_change: { subject: '', text: '' } })).status).toBe(400);
+    expect((await put({ login: { subject: 's', text: '{code}' } })).status).toBe(400);
   });
 
   it('tells browsers not to cache authorization state', async () => {

@@ -17,6 +17,7 @@ import {
   MemoryAdminStore,
   MemoryCredentialStore,
   MemoryKeyStore,
+  MemoryMailTemplateStore,
   MemoryRequestStatsStore,
   MemorySessionStore,
   MemoryUserStore,
@@ -74,6 +75,7 @@ async function harness(options: { setupToken?: string | null } = {}) {
     adminStore,
     webauthnStore,
     requestStatsStore: new MemoryRequestStatsStore(),
+    mailTemplates: new MemoryMailTemplateStore(),
     setupToken: options.setupToken ?? null,
     now: NOW,
   };

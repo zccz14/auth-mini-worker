@@ -1,4 +1,4 @@
-import { D1AdminStore } from './d1-admin';
+import { D1AdminStore, D1MailTemplateStore } from './d1-admin';
 import { D1SigningKeyStore } from './d1-store';
 import {
   D1AppMetaStore,
@@ -94,6 +94,7 @@ async function emailDeps(request: Request, env: Env): Promise<EmailDeps> {
     sessionStore: new D1SessionStore(env.DB),
     keyStore: new D1SigningKeyStore(env.DB),
     smtpStore: new D1SmtpConfigStore(env.DB),
+    mailTemplates: new D1MailTemplateStore(env.DB),
     sendMail: smtpSender,
     now: new Date(),
     clientIp: request.headers.get('cf-connecting-ip'),
@@ -106,6 +107,7 @@ async function emailChangeDeps(request: Request, env: Env): Promise<EmailChangeD
     ...(await sessionDeps(request, env)),
     emailChangeStore: new D1EmailChangeStore(env.DB),
     smtpStore: new D1SmtpConfigStore(env.DB),
+    mailTemplates: new D1MailTemplateStore(env.DB),
     sendMail: smtpSender,
   };
 }
@@ -162,6 +164,7 @@ async function adminDeps(request: Request, env: Env): Promise<AdminDeps> {
     adminStore: new D1AdminStore(env.DB),
     webauthnStore: new D1WebauthnStore(env.DB),
     requestStatsStore: new D1RequestStatsStore(env.DB),
+    mailTemplates: new D1MailTemplateStore(env.DB),
     setupToken: env.ADMIN_SETUP_TOKEN ?? null,
   };
 }

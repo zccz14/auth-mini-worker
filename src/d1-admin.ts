@@ -1,5 +1,16 @@
 import { uuidv4 } from './crypto/tokens';
+import type { MailTemplateConfig, MailTemplateOverrides, MailTemplateStore } from './mail/template';
 import type { AdminCredentialSummary, AdminStore, AppConfig, SmtpInput, SmtpSummary } from './stores';
+
+/** Seeds the single `APP` row on first use, the way `ensure_app_meta` did at startup. */
+async function ensureAppRow(db: D1Database): Promise<void> {
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO app_meta (id, issuer, rp_id, brand_name, brand_background_image)
+       VALUES ('APP', 'http://localhost:7777', 'localhost', 'auth-mini', '')`,
+    )
+    .run();
+}
 
 interface AppMetaRow {
   issuer: string;
@@ -12,13 +23,8 @@ interface AppMetaRow {
 export class D1AdminStore implements AdminStore {
   constructor(private readonly db: D1Database) {}
 
-  private async ensureAppRow(): Promise<void> {
-    await this.db
-      .prepare(
-        `INSERT OR IGNORE INTO app_meta (id, issuer, rp_id, brand_name, brand_background_image)
-         VALUES ('APP', 'http://localhost:7777', 'localhost', 'auth-mini', '')`,
-      )
-      .run();
+  private ensureAppRow(): Promise<void> {
+    return ensureAppRow(this.db);
   }
 
   async readConfig(): Promise<AppConfig> {
@@ -158,5 +164,56 @@ export class D1AdminStore implements AdminStore {
       .bind(userId, relyingParty.issuer, relyingParty.rpId)
       .run();
     return (result.meta?.changes ?? 0) > 0;
+  }
+}
+
+interface MailTemplateRow {
+  brand_name: string;
+  login_mail_subject: string;
+  login_mail_text: string;
+  email_change_mail_subject: string;
+  email_change_mail_text: string;
+}
+
+/**
+ * The stored overrides beside the brand they will be rendered with. Empty cells stay empty here —
+ * `resolveMailTemplates` is the single place that decides what an empty cell means, so a default
+ * can change without rewriting rows.
+ */
+export class D1MailTemplateStore implements MailTemplateStore {
+  constructor(private readonly db: D1Database) {}
+
+  async read(): Promise<MailTemplateConfig> {
+    await ensureAppRow(this.db);
+    const row = await this.db
+      .prepare(
+        `SELECT brand_name, login_mail_subject, login_mail_text,
+                email_change_mail_subject, email_change_mail_text
+         FROM app_meta WHERE id = 'APP'`,
+      )
+      .first<MailTemplateRow>();
+    if (!row) throw new Error('app_meta_missing');
+    return {
+      brandName: row.brand_name,
+      overrides: {
+        loginSubject: row.login_mail_subject,
+        loginText: row.login_mail_text,
+        emailChangeSubject: row.email_change_mail_subject,
+        emailChangeText: row.email_change_mail_text,
+      },
+    };
+  }
+
+  async write(overrides: MailTemplateOverrides): Promise<void> {
+    await ensureAppRow(this.db);
+    await this.db
+      .prepare(
+        `UPDATE app_meta SET login_mail_subject = ?1, login_mail_text = ?2,
+                             email_change_mail_subject = ?3, email_change_mail_text = ?4,
+                             updated_at = CURRENT_TIMESTAMP
+         WHERE id = 'APP'`,
+      )
+      .bind(overrides.loginSubject, overrides.loginText, overrides.emailChangeSubject, overrides.emailChangeText)
+      .run();
   }
 }

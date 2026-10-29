@@ -57,17 +57,3 @@ export function buildMimeMessage(config: SmtpConfig, to: string, content: MailCo
   ];
   return `${headers.join('\r\n')}\r\n\r\n${wrapBase64(toBase64(content.text))}`;
 }
-
-export function otpMail(code: string): MailContent {
-  return {
-    subject: 'Your auth-mini verification code',
-    text: `Your verification code is ${code}. It expires in 10 minutes.`,
-  };
-}
-
-export function emailChangeOtpMail(code: string): MailContent {
-  return {
-    subject: 'Confirm your auth-mini email change',
-    text: `Your email change verification code is ${code}. It expires in 10 minutes.`,
-  };
-}

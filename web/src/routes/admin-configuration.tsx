@@ -13,6 +13,7 @@ import {
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import type { AdminConfigInput, AdminSetupState } from '@/lib/app-sdk';
 
 type SmtpFormValue = NonNullable<AdminConfigInput['smtp']>[number];
@@ -29,6 +30,78 @@ function newSmtpConfig(): SmtpFormValue {
     secure: false,
     weight: 1,
   };
+}
+
+function emptyMailTemplates(): AdminConfigInput['mail_templates'] {
+  return {
+    login: { subject: '', text: '' },
+    email_change: { subject: '', text: '' },
+  };
+}
+
+/**
+ * One group of the two template pairs. The labels name the mail they belong to ("Sign-in mail
+ * subject"), because two boxes called "Subject" on one page are two boxes nobody can tell apart.
+ */
+function MailTemplateGroup({
+  bodyId,
+  bodyLabel,
+  bodyPlaceholder,
+  disabled,
+  subjectId,
+  subjectLabel,
+  subjectPlaceholder,
+  title,
+  value,
+  onChange,
+}: {
+  bodyId: string;
+  bodyLabel: string;
+  bodyPlaceholder: string;
+  disabled: boolean;
+  subjectId: string;
+  subjectLabel: string;
+  subjectPlaceholder: string;
+  title: string;
+  value: AdminConfigInput['mail_templates']['login'];
+  onChange: (patch: Partial<AdminConfigInput['mail_templates']['login']>) => void;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <div className="grid gap-4 rounded-md border border-slate-200 p-4 sm:p-5">
+      <h4 className="text-sm font-semibold text-slate-950">{title}</h4>
+      <FormField
+        description={t('admin.mailSubjectDescription')}
+        id={subjectId}
+        label={subjectLabel}
+      >
+        <Input
+          aria-describedby={`${subjectId}-description`}
+          disabled={disabled}
+          id={subjectId}
+          placeholder={subjectPlaceholder}
+          value={value.subject}
+          onChange={(event) => onChange({ subject: event.currentTarget.value })}
+        />
+      </FormField>
+      <FormField
+        description={t('admin.mailBodyDescription')}
+        id={bodyId}
+        label={bodyLabel}
+      >
+        <Textarea
+          aria-describedby={`${bodyId}-description`}
+          disabled={disabled}
+          id={bodyId}
+          placeholder={bodyPlaceholder}
+          rows={4}
+          value={value.text}
+          onChange={(event) => onChange({ text: event.currentTarget.value })}
+        />
+      </FormField>
+    </div>
+  );
 }
 
 function FormField({
@@ -62,6 +135,7 @@ export function AdminConfigurationRoute() {
     rp_id: '',
     brand_name: 'auth-mini',
     brand_background_image: '',
+    mail_templates: emptyMailTemplates(),
     smtp: null,
   });
   const [pending, setPending] = useState(false);
@@ -77,6 +151,7 @@ export function AdminConfigurationRoute() {
       rp_id: nextSettings.rp_id,
       brand_name: nextSettings.brand_name,
       brand_background_image: nextSettings.brand_background_image,
+      mail_templates: nextSettings.mail_templates ?? emptyMailTemplates(),
       smtp:
         nextSettings.smtp?.map((smtp) => ({
           id: smtp.id,
@@ -135,6 +210,19 @@ export function AdminConfigurationRoute() {
         current.smtp?.map((smtp, currentIndex) =>
           currentIndex === index ? { ...smtp, ...patch } : smtp,
         ) ?? null,
+    }));
+  }
+
+  function updateMailTemplate(
+    group: keyof AdminConfigInput['mail_templates'],
+    patch: Partial<AdminConfigInput['mail_templates']['login']>,
+  ) {
+    setForm((current) => ({
+      ...current,
+      mail_templates: {
+        ...current.mail_templates,
+        [group]: { ...current.mail_templates[group], ...patch },
+      },
     }));
   }
 
@@ -252,6 +340,43 @@ export function AdminConfigurationRoute() {
                     }}
                   />
                 </FormField>
+              </div>
+            </section>
+
+            <section className="grid gap-5 border-b border-slate-200 pb-8">
+              <div className="grid gap-1">
+                <h3 className="text-base font-semibold text-slate-950">
+                  {t('admin.mailTemplatesSection')}
+                </h3>
+                <p className="max-w-2xl text-sm leading-6 text-slate-600">
+                  {t('admin.mailTemplatesSectionDescription')}
+                </p>
+              </div>
+              <div className="grid gap-5 md:grid-cols-2">
+                <MailTemplateGroup
+                  bodyId="login-mail-text"
+                  bodyLabel={t('admin.loginMailBody')}
+                  bodyPlaceholder="Your verification code is {code}. It expires in {minutes} minutes."
+                  disabled={pending}
+                  subjectId="login-mail-subject"
+                  subjectLabel={t('admin.loginMailSubject')}
+                  subjectPlaceholder="Your {brand} verification code"
+                  title={t('admin.loginMailGroup')}
+                  value={form.mail_templates.login}
+                  onChange={(patch) => updateMailTemplate('login', patch)}
+                />
+                <MailTemplateGroup
+                  bodyId="email-change-mail-text"
+                  bodyLabel={t('admin.emailChangeMailBody')}
+                  bodyPlaceholder="Your email change verification code is {code}. It expires in {minutes} minutes."
+                  disabled={pending}
+                  subjectId="email-change-mail-subject"
+                  subjectLabel={t('admin.emailChangeMailSubject')}
+                  subjectPlaceholder="Confirm your {brand} email change"
+                  title={t('admin.emailChangeMailGroup')}
+                  value={form.mail_templates.email_change}
+                  onChange={(patch) => updateMailTemplate('email_change', patch)}
+                />
               </div>
             </section>
 

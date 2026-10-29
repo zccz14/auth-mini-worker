@@ -8,6 +8,7 @@ import type { SigningKeyStore } from '../jwks';
 import type { MailContent } from '../mail/message';
 import type { SmtpConfig, SmtpConfigStore } from '../mail/config';
 import { pickWeighted } from '../mail/config';
+import { loginOtpMail, type MailTemplateReader } from '../mail/template';
 import { mintSession, tokenJson } from '../session';
 
 export interface EmailDeps {
@@ -17,6 +18,8 @@ export interface EmailDeps {
   sessionStore: SessionStore;
   keyStore: SigningKeyStore;
   smtpStore: SmtpConfigStore;
+  /** Templates plus the brand to render them with; read before a code is written. */
+  mailTemplates: MailTemplateReader;
   sendMail: (config: SmtpConfig, to: string, content: MailContent) => Promise<void>;
   now: Date;
   clientIp: string | null;
@@ -55,15 +58,13 @@ export async function handleEmailStart(request: Request, deps: EmailDeps): Promi
   const config = pickWeighted(await deps.smtpStore.listActive(), deps.draw ?? Math.random());
   if (!config) return errorResponse(503, 'smtp_not_configured');
 
+  const mailTemplates = await deps.mailTemplates.read();
   const code = generateOtpCode();
   const expiresAt = new Date(deps.now.getTime() + OTP_SECONDS * 1000).toISOString();
   await deps.otpStore.upsert(email, await sha256Hex(code), expiresAt);
 
   try {
-    await deps.sendMail(config, email, {
-      subject: 'Your auth-mini verification code',
-      text: `Your verification code is ${code}. It expires in 10 minutes.`,
-    });
+    await deps.sendMail(config, email, loginOtpMail(code, mailTemplates));
   } catch {
     // Never leave a code behind that the user cannot possibly have received.
     await deps.otpStore.invalidate(email);

@@ -19,6 +19,7 @@ import {
   MemoryAdminStore,
   MemoryCredentialStore,
   MemoryKeyStore,
+  MemoryMailTemplateStore,
   MemoryRequestStatsStore,
   MemorySessionStore,
   MemoryUserStore,
@@ -148,6 +149,7 @@ describe('GET /admin/request-audit', () => {
       adminStore: new MemoryAdminStore(),
       webauthnStore: new MemoryWebauthnStore(),
       requestStatsStore,
+      mailTemplates: new MemoryMailTemplateStore(),
       setupToken: null,
     };
 

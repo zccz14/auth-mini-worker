@@ -27,6 +27,12 @@ import type {
   SmtpInput,
   SmtpSummary,
 } from '../src/stores';
+import {
+  EMPTY_MAIL_TEMPLATES,
+  type MailTemplateConfig,
+  type MailTemplateOverrides,
+  type MailTemplateStore,
+} from '../src/mail/template';
 import type { SigningKeyRow, SigningKeyStore } from '../src/jwks';
 
 export class MemoryOtpStore implements EmailOtpStore {
@@ -586,5 +592,22 @@ export class MemoryAdminStore implements AdminStore {
     if (this.config.adminUserId !== null) return false;
     this.config = { ...this.config, adminUserId: userId, issuer: relyingParty.issuer, rpId: relyingParty.rpId };
     return true;
+  }
+}
+
+/**
+ * Templates live beside the brand (`app_meta` holds both), so the double keeps them together too:
+ * `brandName` mirrors `MemoryAdminStore.config.brandName` unless a test renames this instance.
+ */
+export class MemoryMailTemplateStore implements MailTemplateStore {
+  brandName = 'auth-mini';
+  overrides: MailTemplateOverrides = { ...EMPTY_MAIL_TEMPLATES };
+
+  async read(): Promise<MailTemplateConfig> {
+    return { brandName: this.brandName, overrides: { ...this.overrides } };
+  }
+
+  async write(overrides: MailTemplateOverrides): Promise<void> {
+    this.overrides = { ...overrides };
   }
 }

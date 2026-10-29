@@ -308,6 +308,16 @@ describe('formal GUI routes', () => {
       brand_background_image: '',
       brand_name: 'auth-mini',
       issuer: 'https://auth.example.com',
+      mail_templates: {
+        login: {
+          subject: 'Your {brand} verification code',
+          text: 'Your verification code is {code}. It expires in 10 minutes.',
+        },
+        email_change: {
+          subject: 'Confirm your {brand} email change',
+          text: 'Your email change verification code is {code}. It expires in 10 minutes.',
+        },
+      },
       rp_id: 'auth.example.com',
       smtp: null,
     });
@@ -332,6 +342,16 @@ describe('formal GUI routes', () => {
       brand_background_image: 'https://cdn.example.com/login.jpg',
       brand_name: 'Example Auth',
       issuer: 'https://auth.example.com',
+      mail_templates: {
+        login: {
+          subject: 'Sign-in code',
+          text: 'Your verification code is {code}. It expires in 10 minutes.',
+        },
+        email_change: {
+          subject: 'Confirm your {brand} email change',
+          text: 'Your email change verification code is {code}. It expires in 10 minutes.',
+        },
+      },
       rp_id: 'auth.example.com',
       smtp: null,
     });
@@ -388,6 +408,10 @@ describe('formal GUI routes', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Brand name')).toHaveValue('auth-mini'),
     );
+    // The template boxes show the wording that will be sent, not an empty diff.
+    expect(screen.getByLabelText('Sign-in mail subject')).toHaveValue(
+      'Your {brand} verification code',
+    );
     expect(
       screen.queryByRole('button', { name: 'JWK Rotate' }),
     ).not.toBeInTheDocument();
@@ -409,6 +433,8 @@ describe('formal GUI routes', () => {
       screen.getByLabelText('Brand background image'),
       'https://cdn.example.com/login.jpg',
     );
+    await user.clear(screen.getByLabelText('Sign-in mail subject'));
+    await user.type(screen.getByLabelText('Sign-in mail subject'), 'Sign-in code');
     await user.click(
       screen.getByRole('button', { name: 'Save configuration' }),
     );
@@ -419,6 +445,16 @@ describe('formal GUI routes', () => {
         rp_id: 'auth.example.com',
         brand_name: 'Example Auth',
         brand_background_image: 'https://cdn.example.com/login.jpg',
+        mail_templates: {
+          login: {
+            subject: 'Sign-in code',
+            text: 'Your verification code is {code}. It expires in 10 minutes.',
+          },
+          email_change: {
+            subject: 'Confirm your {brand} email change',
+            text: 'Your email change verification code is {code}. It expires in 10 minutes.',
+          },
+        },
         smtp: null,
       }),
     );

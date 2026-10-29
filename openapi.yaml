@@ -1394,6 +1394,42 @@ components:
               items:
                 $ref: '#/components/schemas/AdminSetupSmtpInput'
             - type: 'null'
+        mail_templates:
+          $ref: '#/components/schemas/AdminMailTemplates'
+    AdminMailTemplates:
+      type: object
+      additionalProperties: false
+      required:
+        - login
+        - email_change
+      description: >
+        The two transactional mails. `GET` answers with the wording that will actually be sent
+        (built-in defaults filled in); `PUT` stores exactly what it is given, and an empty string
+        means "use the built-in default". An absent field on `PUT` leaves the templates unchanged.
+      properties:
+        login:
+          $ref: '#/components/schemas/AdminMailTemplate'
+        email_change:
+          $ref: '#/components/schemas/AdminMailTemplate'
+    AdminMailTemplate:
+      type: object
+      additionalProperties: false
+      required:
+        - subject
+        - text
+      properties:
+        subject:
+          type: string
+          maxLength: 200
+          description: >
+            Subject template. `{brand}`, `{code}` and `{minutes}` are substituted at send time; a
+            subject is a single header line, so line breaks are rejected.
+        text:
+          type: string
+          maxLength: 4000
+          description: >
+            Body template. It must contain `{code}` unless it is empty: a code the user cannot read
+            is a code the user cannot type back.
     AdminSetupSmtpInput:
       type: object
       additionalProperties: false
@@ -1784,6 +1820,8 @@ components:
               items:
                 $ref: '#/components/schemas/AdminSmtpConfigSummary'
             - type: 'null'
+        mail_templates:
+          $ref: '#/components/schemas/AdminMailTemplates'
     AdminSmtpConfigSummary:
       type: object
       additionalProperties: false
