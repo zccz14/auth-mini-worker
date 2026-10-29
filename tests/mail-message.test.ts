@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { pickWeighted } from '../src/mail/config';
 import type { SmtpConfig } from '../src/mail/config';
-import { buildMimeMessage, otpMail, rfc2822Date } from '../src/mail/message';
+import { buildMimeMessage, rfc2822Date } from '../src/mail/message';
+import { EMPTY_MAIL_TEMPLATES, loginOtpMail } from '../src/mail/template';
 
 const config: SmtpConfig = {
   id: 1,
@@ -20,15 +21,17 @@ function bodyOf(message: string): string {
   return atob(body.replace(/\r\n/g, ''));
 }
 
+const legacyInstance = { brandName: 'auth-mini', overrides: EMPTY_MAIL_TEMPLATES };
+
 describe('mail message', () => {
   it('builds the legacy OTP mail', () => {
-    const content = otpMail('123456');
+    const content = loginOtpMail('123456', legacyInstance);
     expect(content.subject).toBe('Your auth-mini verification code');
     expect(content.text).toBe('Your verification code is 123456. It expires in 10 minutes.');
   });
 
   it('emits a decodable text/plain message with a message id', () => {
-    const message = buildMimeMessage(config, 'user@example.com', otpMail('000042'), new Date('2026-10-26T03:00:00Z'));
+    const message = buildMimeMessage(config, 'user@example.com', loginOtpMail('000042', legacyInstance), new Date('2026-10-26T03:00:00Z'));
     expect(message).toContain('From: Auth Mini <noreply@example.com>');
     expect(message).toContain('To: <user@example.com>');
     expect(message).toContain('Date: Mon, 26 Oct 2026 03:00:00 +0000');

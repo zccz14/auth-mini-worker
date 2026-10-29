@@ -4,7 +4,8 @@ import { OTP_SECONDS, generateOtpCode, isEmailAddress, isSixDigitCode, normalize
 import { errorResponse, jsonResponse } from '../http/response';
 import { StrictJsonError, parseStrictJsonObject, rejectUnknownKeys, requireString } from '../http/strict-json';
 import { pickWeighted, type SmtpConfigStore } from '../mail/config';
-import { emailChangeOtpMail, type MailSender } from '../mail/message';
+import type { MailSender } from '../mail/message';
+import { emailChangeOtpMail, type MailTemplateReader } from '../mail/template';
 import type { EmailChangeOtpStore } from '../stores';
 import type { SessionDeps } from './session';
 
@@ -18,6 +19,8 @@ import type { SessionDeps } from './session';
 export interface EmailChangeDeps extends SessionDeps {
   emailChangeStore: EmailChangeOtpStore;
   smtpStore: SmtpConfigStore;
+  /** Templates plus the brand to render them with; read before a code is written. */
+  mailTemplates: MailTemplateReader;
   sendMail: MailSender;
   /** Injectable so tests can pin the weighted SMTP draw. */
   draw?: number;
@@ -46,12 +49,13 @@ export async function handleEmailChangeStart(request: Request, deps: EmailChange
   const config = pickWeighted(await deps.smtpStore.listActive(), deps.draw ?? Math.random());
   if (!config) return errorResponse(503, 'smtp_not_configured');
 
+  const mailTemplates = await deps.mailTemplates.read();
   const code = generateOtpCode();
   const expiresAt = new Date(deps.now.getTime() + OTP_SECONDS * 1000).toISOString();
   await deps.emailChangeStore.upsert(auth.userId, email, await sha256Hex(code), expiresAt);
 
   try {
-    await deps.sendMail(config, email, emailChangeOtpMail(code));
+    await deps.sendMail(config, email, emailChangeOtpMail(code, mailTemplates));
   } catch {
     // Never leave a code behind that the user cannot possibly have received.
     await deps.emailChangeStore.invalidate(auth.userId);

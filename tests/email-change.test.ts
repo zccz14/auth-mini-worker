@@ -9,6 +9,7 @@ import {
   MemoryCredentialStore,
   MemoryEmailChangeStore,
   MemoryKeyStore,
+  MemoryMailTemplateStore,
   MemorySessionStore,
   MemoryUserStore,
 } from './doubles';
@@ -31,6 +32,7 @@ const smtpConfig: SmtpConfig = {
 async function harness(
   options: {
     smtp?: SmtpConfig[];
+    mailTemplates?: MemoryMailTemplateStore;
     sendMail?: (config: SmtpConfig, to: string, content: MailContent) => Promise<void>;
   } = {},
 ) {
@@ -67,6 +69,7 @@ async function harness(
     now: NOW,
     emailChangeStore,
     smtpStore: { listActive: async () => options.smtp ?? [smtpConfig] },
+    mailTemplates: options.mailTemplates ?? new MemoryMailTemplateStore(),
     sendMail:
       options.sendMail ??
       (async (_config, to, content) => {
@@ -113,6 +116,24 @@ describe('POST /me/email/start', () => {
     expect(row.expiresAt).toBe(new Date(NOW.getTime() + 600_000).toISOString());
     expect(row.codeHash).not.toBe(codeFromLastMail());
     expect(row.codeHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('uses the email-change template, not the login one', async () => {
+    const templates = new MemoryMailTemplateStore();
+    templates.brandName = 'No Trade No Life';
+    templates.overrides = {
+      loginSubject: 'login subject',
+      loginText: 'login {code}',
+      emailChangeSubject: '{brand}: confirm the new address',
+      emailChangeText: 'Move to the new address with {code}.',
+    };
+
+    const { deps, sent, post } = await harness({ mailTemplates: templates });
+    const response = await handleEmailChangeStart(post('/me/email/start', { email: 'new@example.com' }), deps);
+
+    expect(response.status).toBe(200);
+    expect(sent[0]!.subject).toBe('No Trade No Life: confirm the new address');
+    expect(sent[0]!.text).toMatch(/^Move to the new address with \d{6}\.$/);
   });
 
   it('refuses an address another account owns', async () => {

@@ -272,6 +272,19 @@ export const en = {
     'The name shown to users on the sign-in and account pages.',
   'admin.brandBackgroundDescription':
     'An optional image URL used behind the sign-in page.',
+  'admin.mailTemplatesSection': 'Email templates',
+  'admin.mailTemplatesSectionDescription':
+    'What the two verification mails say. Leave a field empty to keep the built-in wording; {brand}, {code} and {minutes} are substituted when the mail is sent.',
+  'admin.loginMailGroup': 'Sign-in code',
+  'admin.emailChangeMailGroup': 'Email change code',
+  'admin.loginMailSubject': 'Sign-in mail subject',
+  'admin.loginMailBody': 'Sign-in mail body',
+  'admin.emailChangeMailSubject': 'Email change mail subject',
+  'admin.emailChangeMailBody': 'Email change mail body',
+  'admin.mailSubjectDescription':
+    'Empty keeps the built-in subject; {brand}, {code} and {minutes} are substituted when the mail is sent.',
+  'admin.mailBodyDescription':
+    'Empty keeps the built-in body. A body must contain {code}; {brand} and {minutes} are optional.',
   'admin.smtpSection': 'Email delivery',
   'admin.smtpSectionDescription':
     'Add one or more SMTP servers. Auth Mini distributes mail using each server’s weight.',
@@ -568,6 +581,17 @@ export const zhCN: Record<TranslationKey, string> = {
   'admin.rpIdDescription': '允许此实例使用通行密钥的域名。',
   'admin.brandNameDescription': '登录页和账户页向用户显示的名称。',
   'admin.brandBackgroundDescription': '登录页背景使用的可选图片地址。',
+  'admin.mailTemplatesSection': '邮件模板',
+  'admin.mailTemplatesSectionDescription':
+    '决定两封验证邮件的措辞。留空表示沿用内置文案；发送时会替换 {brand}、{code} 和 {minutes}。',
+  'admin.loginMailGroup': '登录验证码',
+  'admin.emailChangeMailGroup': '改址验证码',
+  'admin.loginMailSubject': '登录邮件主题',
+  'admin.loginMailBody': '登录邮件正文',
+  'admin.emailChangeMailSubject': '改址邮件主题',
+  'admin.emailChangeMailBody': '改址邮件正文',
+  'admin.mailSubjectDescription': '留空表示沿用内置主题；发送时会替换 {brand}、{code} 和 {minutes}。',
+  'admin.mailBodyDescription': '留空表示沿用内置正文。正文必须包含 {code}；{brand} 和 {minutes} 可选。',
   'admin.smtpSection': '邮件投递',
   'admin.smtpSectionDescription':
     '可以添加一个或多个 SMTP 服务器。Auth Mini 会按每台服务器的权重分配邮件。',

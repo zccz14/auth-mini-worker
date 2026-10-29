@@ -27,9 +27,21 @@ export type Branding = {
   brand_background_image: string;
 };
 
+export type AdminMailTemplate = {
+  /** `{brand}`, `{code}` and `{minutes}` are substituted when the mail is sent. */
+  subject: string;
+  text: string;
+};
+
+export type AdminMailTemplates = {
+  login: AdminMailTemplate;
+  email_change: AdminMailTemplate;
+};
+
 /**
- * `/admin/setup` answers with the first-run projection only; `admin_ed25519` and `smtp` come from
- * `/admin/config`, which needs a token, so they are optional here rather than absent by accident.
+ * `/admin/setup` answers with the first-run projection only; `admin_ed25519`, `smtp` and
+ * `mail_templates` come from `/admin/config`, which needs a token, so they are optional here
+ * rather than absent by accident.
  */
 export type AdminSetupState = {
   issuer: string;
@@ -38,6 +50,7 @@ export type AdminSetupState = {
   brand_background_image: string;
   admin_user_id: string | null;
   admin_ed25519?: unknown | null;
+  mail_templates?: AdminMailTemplates;
   smtp?: null | Array<{
     id: number;
     host: string;
@@ -56,6 +69,7 @@ export type AdminConfigInput = {
   rp_id: string;
   brand_name: string;
   brand_background_image: string;
+  mail_templates: AdminMailTemplates;
   smtp: null | Array<{
     id: number | null;
     host: string;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MemoryKeyStore, MemoryOtpStore, MemorySessionStore, MemoryUserStore } from './doubles';
+import { MemoryKeyStore, MemoryMailTemplateStore, MemoryOtpStore, MemorySessionStore, MemoryUserStore } from './doubles';
 import { normalizeEmail, isEmailAddress, isSixDigitCode, generateOtpCode } from '../src/email/otp';
 import { sha256Hex } from '../src/crypto/tokens';
 import { ensureSigningKeys, currentSigningKey } from '../src/jwks';
@@ -38,6 +38,7 @@ function makeDeps(overrides: Partial<EmailDeps> = {}) {
     sessionStore,
     keyStore,
     smtpStore,
+    mailTemplates: new MemoryMailTemplateStore(),
     sendMail: async (_config, to, content) => {
       sent.push({ to, subject: content.subject, text: content.text });
     },
@@ -106,6 +107,24 @@ describe('POST /email/start', () => {
     expect(stored?.codeHash).toBe(await sha256Hex(code));
     expect(stored?.codeHash).not.toContain(code);
     expect(stored?.expiresAt).toBe('2026-10-26T04:10:00.000Z');
+  });
+
+  it('mails the configured wording with the brand that is in force', async () => {
+    const templates = new MemoryMailTemplateStore();
+    templates.brandName = 'No Trade No Life';
+    templates.overrides = {
+      loginSubject: '{brand} sign-in code',
+      loginText: '{brand}: your code is {code}, valid for {minutes} minutes.',
+      emailChangeSubject: '',
+      emailChangeText: '',
+    };
+
+    const { deps, sent } = makeDeps({ mailTemplates: templates });
+    const response = await startWith(deps, 'user@example.com');
+
+    expect(response.status).toBe(200);
+    expect(sent[0]!.subject).toBe('No Trade No Life sign-in code');
+    expect(sent[0]!.text).toMatch(/^No Trade No Life: your code is \d{6}, valid for 10 minutes\.$/);
   });
 
   it('invalidates the code when delivery fails', async () => {

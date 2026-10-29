@@ -23,6 +23,16 @@ function settings() {
     brand_background_image: '',
     brand_name: 'auth-mini',
     issuer: 'https://auth.example.com',
+    mail_templates: {
+      login: {
+        subject: '{brand} sign-in code',
+        text: 'Your code is {code}, valid for {minutes} minutes.',
+      },
+      email_change: {
+        subject: 'Confirm your {brand} email change',
+        text: 'Your email change verification code is {code}. It expires in {minutes} minutes.',
+      },
+    },
     rp_id: 'auth.example.com',
     smtp: [
       {
@@ -76,6 +86,16 @@ describe('admin configuration form', () => {
     expect(screen.getAllByLabelText('From name')).toHaveLength(2);
     expect(screen.getAllByLabelText('Delivery weight')).toHaveLength(2);
     expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    // The stored wording is in the boxes: this page edits text, it does not ask for a diff.
+    expect(screen.getByLabelText('Sign-in mail subject')).toHaveValue(
+      '{brand} sign-in code',
+    );
+    expect(screen.getByLabelText('Sign-in mail body')).toHaveValue(
+      'Your code is {code}, valid for {minutes} minutes.',
+    );
+    expect(screen.getByLabelText('Email change mail subject')).toHaveValue(
+      'Confirm your {brand} email change',
+    );
 
     await user.click(screen.getByRole('button', { name: 'Add SMTP server' }));
     expect(screen.getAllByLabelText('SMTP host')).toHaveLength(3);
@@ -84,6 +104,13 @@ describe('admin configuration form', () => {
       screen.getAllByRole('button', { name: 'Remove SMTP server' })[2],
     );
     expect(screen.getAllByLabelText('SMTP host')).toHaveLength(2);
+
+    await user.clear(screen.getByLabelText('Email change mail body'));
+    await user.type(
+      screen.getByLabelText('Email change mail body'),
+      // `{{` types one literal brace: userEvent reads `{code}` as a key descriptor otherwise.
+      'Move to the new address with {{code}.',
+    );
 
     await user.click(
       screen.getByRole('button', { name: 'Save configuration' }),
@@ -94,6 +121,16 @@ describe('admin configuration form', () => {
         rp_id: 'auth.example.com',
         brand_name: 'auth-mini',
         brand_background_image: '',
+        mail_templates: {
+          login: {
+            subject: '{brand} sign-in code',
+            text: 'Your code is {code}, valid for {minutes} minutes.',
+          },
+          email_change: {
+            subject: 'Confirm your {brand} email change',
+            text: 'Move to the new address with {code}.',
+          },
+        },
         smtp: [
           {
             id: 1,

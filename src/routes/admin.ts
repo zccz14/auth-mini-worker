@@ -13,6 +13,13 @@ import {
   AdminValidationError,
 } from '../admin/validate';
 import type { AdminStore, AppConfig, RequestStatsStore, SmtpInput, WebauthnStore } from '../stores';
+import {
+  MailTemplateError,
+  parseMailTemplateOverrides,
+  resolveMailTemplates,
+  type MailTemplateOverrides,
+  type MailTemplateStore,
+} from '../mail/template';
 import { readRequestAudit } from '../stats';
 import { WEBAUTHN_CHALLENGE_SECONDS, newChallenge, registrationOptions, verifyRegistrationCeremony, webauthnUserHandleText } from '../webauthn';
 import { REGISTER_INVALID, isUuid, parseRegistrationCredential, passkeyRecord, reportsNonDiscoverable } from './webauthn';
@@ -22,6 +29,8 @@ export interface AdminDeps extends SessionDeps {
   adminStore: AdminStore;
   webauthnStore: WebauthnStore;
   requestStatsStore: RequestStatsStore;
+  /** The two mail templates, stored beside the brand they are rendered with. */
+  mailTemplates: MailTemplateStore;
   /** When set, /admin/setup also requires this token; production should always set it. */
   setupToken: string | null;
 }
@@ -42,10 +51,21 @@ async function bootstrapJson(adminStore: AdminStore): Promise<Record<string, unk
   };
 }
 
-/** The full administrator view of `/admin/config`. */
-async function configJson(adminStore: AdminStore): Promise<Record<string, unknown>> {
-  const config = await adminStore.readConfig();
-  const [adminEd25519, smtp] = await Promise.all([adminStore.firstAdminCredential(), adminStore.listSmtpSummaries()]);
+/**
+ * The full administrator view of `/admin/config`.
+ *
+ * Mail templates come back *resolved*: what the next message will actually say, defaults filled in.
+ * An administrator therefore edits the wording rather than a diff against an invisible default,
+ * and clearing a field stores `''` again — it is the default that comes back, not an empty mail.
+ */
+async function configJson(deps: AdminDeps): Promise<Record<string, unknown>> {
+  const config = await deps.adminStore.readConfig();
+  const [adminEd25519, smtp, mailTemplates] = await Promise.all([
+    deps.adminStore.firstAdminCredential(),
+    deps.adminStore.listSmtpSummaries(),
+    deps.mailTemplates.read(),
+  ]);
+  const templates = resolveMailTemplates(mailTemplates.overrides);
   return {
     issuer: config.issuer,
     rp_id: config.rpId,
@@ -68,6 +88,10 @@ async function configJson(adminStore: AdminStore): Promise<Record<string, unknow
             is_active: row.isActive,
             weight: row.weight,
           })),
+    mail_templates: {
+      login: { subject: templates.loginSubject, text: templates.loginText },
+      email_change: { subject: templates.emailChangeSubject, text: templates.emailChangeText },
+    },
   };
 }
 
@@ -319,17 +343,18 @@ export async function handleAdminConfig(request: Request, deps: AdminDeps): Prom
   if (!auth) return errorResponse(401, 'invalid_access_token');
   if (!(await deps.userStore.isAdmin(auth.userId))) return errorResponse(403, 'admin_required');
 
-  if (request.method === 'GET') return jsonResponse(await configJson(deps.adminStore));
+  if (request.method === 'GET') return jsonResponse(await configJson(deps));
 
   let issuer: string;
   let rpId: string;
   let brandName: string;
   let brandBackgroundImage: string;
   let smtp: SmtpInput[] | null;
+  let mailTemplates: MailTemplateOverrides | null = null;
 
   try {
     const body = parseStrictJsonObject(await request.text());
-    rejectUnknownKeys(body, ['issuer', 'rp_id', 'brand_name', 'brand_background_image', 'smtp']);
+    rejectUnknownKeys(body, ['issuer', 'rp_id', 'brand_name', 'brand_background_image', 'smtp', 'mail_templates']);
     issuer = normalizeAllowedOrigin(requireString(body, 'issuer'));
     rpId = normalizeRpId(requireString(body, 'rp_id'));
     brandName = normalizeBrandName(requireString(body, 'brand_name'));
@@ -344,8 +369,14 @@ export async function handleAdminConfig(request: Request, deps: AdminDeps): Prom
         if (input.id === null && input.password.length === 0) return errorResponse(400, 'invalid_request');
       }
     }
+    const rawTemplates = body['mail_templates'];
+    // Absent means "leave the templates alone", exactly like `smtp`; a typo inside them is a 400,
+    // never a silently dropped template that mails the old wording.
+    if (rawTemplates !== undefined && rawTemplates !== null) mailTemplates = parseMailTemplateOverrides(rawTemplates);
   } catch (error) {
-    if (error instanceof StrictJsonError || error instanceof AdminValidationError) return errorResponse(400, 'invalid_request');
+    if (error instanceof StrictJsonError || error instanceof AdminValidationError || error instanceof MailTemplateError) {
+      return errorResponse(400, 'invalid_request');
+    }
     throw error;
   }
 
@@ -358,6 +389,7 @@ export async function handleAdminConfig(request: Request, deps: AdminDeps): Prom
       return errorResponse(400, 'invalid_request');
     }
   }
+  if (mailTemplates) await deps.mailTemplates.write(mailTemplates);
 
-  return jsonResponse(await configJson(deps.adminStore));
+  return jsonResponse(await configJson(deps));
 }
