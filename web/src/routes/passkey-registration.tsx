@@ -10,21 +10,33 @@ const LOGIN_PATH = '/login?return_to=%2Fpasskey%2Fregister';
 
 export function PasskeyRegistrationRoute() {
   const navigate = useNavigate();
-  const { sdk, session, setupError, setupInitialized, setupLoading, setupState } =
-    useApp();
+  const {
+    branding,
+    sdk,
+    session,
+    setupError,
+    setupInitialized,
+    setupLoading,
+    setupState,
+  } = useApp();
   const { t } = useI18n();
   const [pending, setPending] = useState(false);
   const [registered, setRegistered] = useState(false);
   const [error, setError] = useState('');
 
-  const passkeyConfigured = setupState
-    ? Boolean(setupState.rp_id)
-    : setupInitialized;
+  const passkeyConfigured = branding
+    ? Boolean(branding.rp_id)
+    : setupState
+      ? Boolean(setupState.rp_id)
+      : setupInitialized;
   const canRegister =
     Boolean(sdk) && session.authenticated && passkeyConfigured && !pending;
-  const brandName = setupState?.brand_name ?? 'auth-mini';
+  const brandName = branding?.brand_name ?? setupState?.brand_name ?? 'auth-mini';
   const logoSrc = `${import.meta.env.BASE_URL}auth-mini-logo.png`;
-  const brandBackgroundImage = setupState?.brand_background_image ?? '';
+  const brandBackgroundImage =
+    branding?.brand_background_image ??
+    setupState?.brand_background_image ??
+    '';
   const backgroundStyle: CSSProperties | undefined = brandBackgroundImage
     ? { backgroundImage: `url("${brandBackgroundImage}")` }
     : undefined;

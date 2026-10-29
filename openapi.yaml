@@ -1190,6 +1190,26 @@ paths:
           $ref: '#/components/responses/InsufficientAuthenticationMethod'
         '404':
           $ref: '#/components/responses/CredentialNotFound'
+  /branding:
+    get:
+      security: []
+      tags:
+        - branding
+      operationId: getBranding
+      summary: Read the public brand of this instance
+      description: >-
+        The name, background image and relying party an unauthenticated visitor sees: the login
+        page, the console header and the browser tab. Public by nature — the same values are in
+        every token and every passkey ceremony — and deliberately not served by `/admin/setup`,
+        which answers 403 once the root user is claimed. Not in the legacy contract; recorded as
+        an addition in docs/COMPATIBILITY.md.
+      responses:
+        '200':
+          description: Public branding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branding'
   /jwks:
     get:
       security: []
@@ -1688,6 +1708,24 @@ components:
         ed25519_count:
           type: integer
           minimum: 0
+    Branding:
+      type: object
+      additionalProperties: false
+      required:
+        - issuer
+        - rp_id
+        - brand_name
+        - brand_background_image
+      properties:
+        issuer:
+          type: string
+          format: uri
+        rp_id:
+          type: string
+        brand_name:
+          type: string
+        brand_background_image:
+          type: string
     AdminSetupBootstrap:
       type: object
       additionalProperties: false

@@ -82,6 +82,7 @@ function Probe() {
         )}
       </span>
       <span data-testid="setup">{app.setupState?.brand_name}</span>
+      <span data-testid="branding">{`brand:${app.branding?.brand_name}`}</span>
       <span data-testid="initialized">{String(app.setupInitialized)}</span>
       <button
         onClick={() => void app.sdk?.session.acceptRedirectCallback(tokens)}
@@ -117,6 +118,19 @@ afterEach(() => {
 });
 
 describe('AppProvider', () => {
+  it('names the tab after the public brand, not the hard-coded default', async () => {
+    document.title = 'Auth Mini';
+    render(
+      <AppProvider>
+        <Probe />
+      </AppProvider>,
+    );
+
+    expect(await screen.findByTestId('branding')).toHaveTextContent('brand:Example Auth');
+    // The reported bug: renaming the instance left the tab saying "auth-mini" forever.
+    await waitFor(() => expect(document.title).toBe('Example Auth'));
+  });
+
   it('reads the gated setup endpoint as "already initialized"', async () => {
     vi.stubGlobal(
       'fetch',

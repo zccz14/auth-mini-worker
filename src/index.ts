@@ -65,6 +65,7 @@ import {
 import type { SessionDeps } from './routes/session';
 import { handleMe, handleSessionLogout, handleSessionRefresh, handleTime } from './routes/session';
 import { handleJwks } from './routes/jwks';
+import { handleBranding } from './routes/branding';
 import { isWebAssetPath, serveWebAsset } from './web-assets';
 import { endpointLabel, recordProbe, recordRequest } from './stats';
 
@@ -185,6 +186,7 @@ function route(method: string, path: string, handler: ParamsHandler): Route {
  */
 const routes: Route[] = [
   route('GET', '/jwks', (request, env) => handleJwks(request, env)),
+  route('GET', '/branding', async (request, env) => handleBranding(request, { adminStore: new D1AdminStore(env.DB) })),
   route('POST', '/email/start', async (request, env) => handleEmailStart(request, await emailDeps(request, env))),
   route('POST', '/email/verify', async (request, env) => handleEmailVerify(request, await emailDeps(request, env))),
   route('POST', '/me/email/start', async (request, env) => handleEmailChangeStart(request, await emailChangeDeps(request, env))),

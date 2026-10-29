@@ -61,9 +61,9 @@ function Icon({ name }: { name: IconName }) {
 }
 
 export function OverviewRoute() {
-  const { session, setupState } = useApp();
+  const { branding, session, setupState } = useApp();
   const { t } = useI18n();
-  const brandName = setupState?.brand_name ?? 'auth-mini';
+  const brandName = branding?.brand_name ?? setupState?.brand_name ?? 'auth-mini';
   const destinations = [
     {
       to: '/account',

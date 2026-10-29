@@ -53,7 +53,7 @@ const SSO_UNAVAILABLE_NOTICE = 'sso-unavailable';
 export function LoginRoute() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { sdk, session, setupInitialized, setupState } = useApp();
+  const { branding, sdk, session, setupInitialized, setupState } = useApp();
   const { t } = useI18n();
   const request = useMemo(
     () => parseLoginRequest(location.search, window.location.search),
@@ -86,11 +86,13 @@ export function LoginRoute() {
   const ssoAttemptRef = useRef(false);
 
   const sdkReady = Boolean(sdk);
-  // The bootstrap payload is gated once the root user is claimed, but the instance still has
-  // passkeys; falling back to that fact keeps the passkey button on the login page.
-  const passkeyConfigured = setupState
-    ? Boolean(setupState.rp_id)
-    : setupInitialized;
+  // Branding is readable without a session and survives the claim, so it is the first source;
+  // the other two cover the moment before it arrives.
+  const passkeyConfigured = branding
+    ? Boolean(branding.rp_id)
+    : setupState
+      ? Boolean(setupState.rp_id)
+      : setupInitialized;
   const privateKeyError =
     privateKey.trim() === '' ? '' : validateEd25519PrivateKey(privateKey);
   const canStartEmail =
@@ -107,14 +109,19 @@ export function LoginRoute() {
     pendingAction === null;
   const canUsePasskey = sdkReady && passkeyConfigured && pendingAction === null;
   const canStartRemoteLogin = sdkReady && pendingAction === null;
-  const brandName = setupState?.brand_name ?? 'auth-mini';
+  const brandName = branding?.brand_name ?? setupState?.brand_name ?? 'auth-mini';
   const logoSrc = `${import.meta.env.BASE_URL}auth-mini-logo.png`;
-  const issuerHostname = setupState
-    ? issuerAudience(setupState.issuer)
-    : setupInitialized
-      ? window.location.hostname
-      : null;
-  const brandBackgroundImage = setupState?.brand_background_image ?? '';
+  const issuerHostname = branding
+    ? issuerAudience(branding.issuer)
+    : setupState
+      ? issuerAudience(setupState.issuer)
+      : setupInitialized
+        ? window.location.hostname
+        : null;
+  const brandBackgroundImage =
+    branding?.brand_background_image ??
+    setupState?.brand_background_image ??
+    '';
   const loginBackgroundStyle: CSSProperties | undefined = brandBackgroundImage
     ? { backgroundImage: `url("${brandBackgroundImage}")` }
     : undefined;

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { DirectoryTokenCard } from '@/components/app/directory-token-card';
 import { useApp } from '@/app/providers/app-provider';
 import { useI18n } from '@/lib/i18n';
-import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Card,
@@ -13,16 +12,14 @@ import {
 } from '@/components/ui/card';
 
 export function AdminUsersRoute() {
-  const { sdk, session } = useApp();
+  const { sdk } = useApp();
   const { t } = useI18n();
   const [users, setUsers] = useState<Array<Record<string, unknown>> | null>(
     null,
   );
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState('');
   const [loadError, setLoadError] = useState<string | null>(null);
   const errorMessage =
-    error || (loadError === null ? '' : loadError || t('admin.loadError'));
+    loadError === null ? '' : loadError || t('admin.loadError');
 
   useEffect(() => {
     if (!sdk) return;
@@ -42,31 +39,6 @@ export function AdminUsersRoute() {
       active = false;
     };
   }, [sdk]);
-
-  async function exportDatabase() {
-    if (!sdk || !session.accessToken || pending) return;
-    setPending(true);
-    setError('');
-
-    try {
-      const response = await fetch(sdk.admin.databaseUrl(), {
-        headers: { authorization: 'Bearer ' + session.accessToken },
-      });
-      if (!response.ok) {
-        throw new Error(t('admin.exportFailed'));
-      }
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'auth-mini.sqlite';
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('admin.exportError'));
-    } finally {
-      setPending(false);
-    }
-  }
 
   return (
     <div className="grid gap-4">
@@ -122,13 +94,6 @@ export function AdminUsersRoute() {
               </table>
             </div>
           ) : null}
-          <Button
-            className="w-full sm:w-fit"
-            disabled={pending}
-            onClick={() => void exportDatabase()}
-          >
-            {pending ? t('admin.exporting') : t('admin.exportDatabase')}
-          </Button>
         </CardContent>
       </Card>
     </div>

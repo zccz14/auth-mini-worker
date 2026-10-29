@@ -450,47 +450,12 @@ describe('formal GUI routes', () => {
 
     await user.click(screen.getByRole('link', { name: 'Users' }));
     expect(await screen.findByText('member@example.com')).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Export SQLite database' }),
-    ).toBeInTheDocument();
     expect(screen.queryByText('CURRENT')).not.toBeInTheDocument();
     expect(
       screen
         .getAllByRole('link')
         .filter((link) => link.getAttribute('aria-current') === 'page'),
     ).toHaveLength(1);
-
-    const fetchDatabase = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response('sqlite-test-data'));
-    Object.defineProperty(URL, 'createObjectURL', {
-      configurable: true,
-      value: vi.fn(() => 'blob:test-database'),
-    });
-    Object.defineProperty(URL, 'revokeObjectURL', {
-      configurable: true,
-      value: vi.fn(),
-    });
-    const download = vi
-      .spyOn(HTMLAnchorElement.prototype, 'click')
-      .mockImplementation(() => {});
-    await user.click(
-      screen.getByRole('button', { name: 'Export SQLite database' }),
-    );
-    await waitFor(() => expect(download).toHaveBeenCalledOnce());
-    expect(fetchDatabase).toHaveBeenCalledWith(
-      'https://auth.example.com/admin/database',
-      {
-        headers: {
-          authorization:
-            'Bearer eyJhbGciOiJub25lIn0.eyJhdXRoX2FkbWluIjp0cnVlfQ.',
-        },
-      },
-    );
-    expect(download.mock.instances[0]).toHaveAttribute(
-      'download',
-      'auth-mini.sqlite',
-    );
 
     await user.selectOptions(screen.getByLabelText('Language'), 'zh-CN');
     expect(
